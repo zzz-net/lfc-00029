@@ -1,0 +1,290 @@
+{
+  "templates": [
+    {
+      "id": "tpl_mqlpbg8a_05xc68mp",
+      "name": "通用设备巡检模板",
+      "version": 1,
+      "enabled": true,
+      "fields": [
+        {
+          "id": "fld_mqlpbg8a_vermenrq",
+          "key": "appearance",
+          "label": "外观检查",
+          "type": "select",
+          "required": true,
+          "options": [
+            "正常",
+            "有灰尘",
+            "有油污",
+            "破损"
+          ],
+          "anomalyLevel": "medium"
+        },
+        {
+          "id": "fld_mqlpbg8a_55gevra0",
+          "key": "temperature",
+          "label": "运行温度(℃)",
+          "type": "number",
+          "required": true,
+          "anomalyLevel": "high"
+        },
+        {
+          "id": "fld_mqlpbg8a_xo07ftbh",
+          "key": "vibration",
+          "label": "振动情况",
+          "type": "select",
+          "required": true,
+          "options": [
+            "无",
+            "轻微",
+            "明显",
+            "剧烈"
+          ],
+          "anomalyLevel": "high"
+        },
+        {
+          "id": "fld_mqlpbg8a_1h73plhb",
+          "key": "noise",
+          "label": "噪音情况",
+          "type": "select",
+          "required": false,
+          "options": [
+            "正常",
+            "轻微异常",
+            "明显异响"
+          ],
+          "anomalyLevel": "medium"
+        },
+        {
+          "id": "fld_mqlpbg8a_iitc6kao",
+          "key": "leak",
+          "label": "泄漏检查",
+          "type": "select",
+          "required": true,
+          "options": [
+            "无",
+            "轻微渗",
+            "明显漏"
+          ],
+          "anomalyLevel": "critical"
+        },
+        {
+          "id": "fld_mqlpbg8a_40v5vd00",
+          "key": "photo",
+          "label": "现场照片",
+          "type": "photo",
+          "required": false
+        },
+        {
+          "id": "fld_mqlpbg8a_e1hpw1bz",
+          "key": "remark",
+          "label": "备注",
+          "type": "textarea",
+          "required": false
+        }
+      ],
+      "createdAt": "2026-06-20T01:51:05.194Z",
+      "updatedAt": "2026-06-20T01:51:05.194Z"
+    }
+  ],
+  "devices": [
+    {
+      "id": "dev_mqlpbg8a_b50m86mk",
+      "code": "PUMP-001",
+      "name": "1号循环泵",
+      "location": "A区泵房",
+      "category": "泵类",
+      "status": "normal"
+    },
+    {
+      "id": "dev_mqlpbg8a_hi1vekcb",
+      "code": "PUMP-002",
+      "name": "2号循环泵",
+      "location": "A区泵房",
+      "category": "泵类",
+      "status": "normal"
+    },
+    {
+      "id": "dev_mqlpbg8a_knk7esj7",
+      "code": "VALVE-101",
+      "name": "主管道阀门",
+      "location": "B区管廊",
+      "category": "阀门",
+      "status": "normal"
+    },
+    {
+      "id": "dev_mqlpbg8a_8ypxaj7b",
+      "code": "MOTOR-201",
+      "name": "送风机电机",
+      "location": "C区车间",
+      "category": "电机",
+      "status": "maintenance"
+    },
+    {
+      "id": "dev_mqlpbg8a_cvyfkkdp",
+      "code": "SENSOR-301",
+      "name": "温度传感器组",
+      "location": "D区控制室",
+      "category": "仪表",
+      "status": "normal"
+    },
+    {
+      "id": "dev_mqlpbg8a_828rj2w7",
+      "code": "COMP-401",
+      "name": "空压机",
+      "location": "E区动力房",
+      "category": "压缩机",
+      "status": "normal"
+    },
+    {
+      "id": "dev_mqlpbg8a_yzl43dmh",
+      "code": "TRANS-501",
+      "name": "主变压器",
+      "location": "F区变电站",
+      "category": "电气",
+      "status": "normal"
+    },
+    {
+      "id": "dev_mqlpbg8a_guc4n4i3",
+      "code": "BOILER-601",
+      "name": "蒸汽锅炉",
+      "location": "G区锅炉房",
+      "category": "锅炉",
+      "status": "offline"
+    }
+  ],
+  "inspections": [
+    {
+      "id": "rec_mqlpbg8a_pe3pj2d0",
+      "deviceId": "dev_mqlpbg8a_b50m86mk",
+      "templateId": "tpl_mqlpbg8a_05xc68mp",
+      "templateVersion": 2,
+      "inspectorId": "inspector_001",
+      "inspectorName": "张巡检",
+      "date": "2026-06-20",
+      "values": {
+        "appearance": "破损",
+        "temperature": 88,
+        "vibration": "明显",
+        "noise": "轻微异常",
+        "leak": "明显漏",
+        "remark": "review conflict p1"
+      },
+      "photos": [],
+      "anomalyLevel": "critical",
+      "status": "synced",
+      "createdAt": "2026-06-20T03:04:40.397Z",
+      "updatedAt": "2026-06-20T03:04:40.397Z",
+      "syncedAt": "2026-06-20T03:04:44.018Z"
+    },
+    {
+      "id": "rec_mqlrxts7_ifgbjo8f",
+      "deviceId": "dev_mqlpbg8a_hi1vekcb",
+      "templateId": "tpl_mqlpbg8a_05xc68mp",
+      "templateVersion": 2,
+      "inspectorId": "inspector_001",
+      "inspectorName": "张巡检",
+      "date": "2026-06-20",
+      "values": {
+        "appearance": "正常",
+        "temperature": 40,
+        "vibration": "无",
+        "noise": "正常",
+        "leak": "无",
+        "remark": "review draft p2"
+      },
+      "photos": [],
+      "anomalyLevel": "high",
+      "status": "synced",
+      "createdAt": "2026-06-20T03:04:28.416Z",
+      "updatedAt": "2026-06-20T03:04:38.763Z",
+      "syncedAt": "2026-06-20T03:04:42.441Z"
+    }
+  ],
+  "conflicts": [
+    {
+      "id": "cfl_mqlry4ll_jbnlduu9",
+      "deviceId": "dev_mqlpbg8a_b50m86mk",
+      "date": "2026-06-20",
+      "localVersion": {
+        "id": "rec_mqlry30t_whffvbg3",
+        "deviceId": "dev_mqlpbg8a_b50m86mk",
+        "templateId": "tpl_mqlpbg8a_05xc68mp",
+        "templateVersion": 2,
+        "inspectorId": "inspector_001",
+        "inspectorName": "张巡检",
+        "date": "2026-06-20",
+        "values": {
+          "appearance": "破损",
+          "temperature": 88,
+          "vibration": "明显",
+          "noise": "轻微异常",
+          "leak": "明显漏",
+          "remark": "review conflict p1"
+        },
+        "photos": [],
+        "anomalyLevel": "critical",
+        "status": "submitted",
+        "createdAt": "2026-06-20T03:04:40.397Z",
+        "updatedAt": "2026-06-20T03:04:40.397Z"
+      },
+      "remoteVersion": {
+        "id": "rec_mqlpbg8a_pe3pj2d0",
+        "deviceId": "dev_mqlpbg8a_b50m86mk",
+        "templateId": "tpl_mqlpbg8a_05xc68mp",
+        "templateVersion": 1,
+        "inspectorId": "inspector_001",
+        "inspectorName": "张巡检",
+        "date": "2026-06-20",
+        "values": {
+          "appearance": "正常",
+          "temperature": 45,
+          "vibration": "无",
+          "noise": "正常",
+          "leak": "无",
+          "remark": "例行巡检，一切正常"
+        },
+        "photos": [],
+        "anomalyLevel": "none",
+        "status": "synced",
+        "createdAt": "2026-06-20T01:51:05.194Z",
+        "updatedAt": "2026-06-20T01:51:05.194Z",
+        "syncedAt": "2026-06-20T01:51:05.194Z"
+      },
+      "resolved": true,
+      "diffFields": [
+        "appearance",
+        "temperature",
+        "vibration",
+        "noise",
+        "leak",
+        "remark",
+        "anomalyLevel"
+      ],
+      "resolution": "keep-local",
+      "resolvedAt": "2026-06-20T03:04:44.019Z"
+    }
+  ],
+  "logs": [
+    {
+      "id": "log_mqlry5tg_fvj1a6qr",
+      "timestamp": "2026-06-20T03:04:44.020Z",
+      "userId": "inspector_001",
+      "userName": "张巡检",
+      "action": "解决冲突",
+      "target": "dev_mqlpbg8a_b50m86mk",
+      "detail": "解决了 2026-06-20 的冲突，方式：keep-local",
+      "result": "success"
+    },
+    {
+      "id": "log_mqlry4lm_ntbo7rxy",
+      "timestamp": "2026-06-20T03:04:42.442Z",
+      "userId": "inspector_001",
+      "userName": "张巡检",
+      "action": "同步冲突",
+      "target": "dev_mqlpbg8a_b50m86mk",
+      "detail": "2026-06-20 设备巡检记录存在冲突，共 7 个字段不同",
+      "result": "conflict"
+    }
+  ]
+}
