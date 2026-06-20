@@ -17,6 +17,13 @@ import {
   deleteSyncQueueItem,
   getAppState,
   setAppState,
+  getAllStatusHistory,
+  addStatusChangeEvent as dbAddStatusEvent,
+  getAllSubmissionSnapshots,
+  addSubmissionSnapshot as dbAddSnapshot,
+  getAllRecordMeta,
+  putRecordMeta as dbPutMeta,
+  deleteSyncQueueItem as dbDeleteSyncItem,
 } from '@/db/indexedDb';
 import { apiClient } from '@/api/client';
 import { generateId, getTodayString } from '@/utils/id';
@@ -29,6 +36,12 @@ import type {
   OperationLog,
   SyncQueueItem,
   UserRole,
+  StatusChangeEvent,
+  SubmissionSnapshot,
+  RecordMeta,
+  StatusChangeAction,
+  ConflictResolution,
+  RecordStatus,
 } from '@/types';
 
 interface AppStore {
@@ -44,9 +57,15 @@ interface AppStore {
   conflicts: ConflictRecord[];
   logs: OperationLog[];
   syncQueue: SyncQueueItem[];
+  statusHistory: StatusChangeEvent[];
+  submissionSnapshots: SubmissionSnapshot[];
+  recordMetaList: RecordMeta[];
 
   isLoading: boolean;
   error: string | null;
+
+  sessionRecovered: boolean;
+  lastVisitAt: string | null;
 
   setRole: (role: UserRole) => void;
   setOfflineMode: (offline: boolean) => void;
@@ -63,14 +82,22 @@ interface AppStore {
 
   saveInspectionDraft: (data: Partial<InspectionRecord>) => Promise<InspectionRecord>;
   submitInspection: (data: Partial<InspectionRecord>) => Promise<InspectionRecord>;
+  withdrawInspection: (recordId: string) => Promise<InspectionRecord>;
 
   syncAll: () => Promise<{ success: number; conflicts: number; errors: number }>;
   resolveConflict: (
     conflictId: string,
-    resolution: 'keep-local' | 'keep-remote' | 'merge'
+    resolution: ConflictResolution
   ) => Promise<void>;
 
   addLogEntry: (log: Omit<OperationLog, 'id' | 'timestamp'>) => Promise<void>;
+
+  getRecordMeta: (recordId: string) => RecordMeta | undefined;
+  getStatusHistory: (recordId: string) => StatusChangeEvent[];
+  getSubmissionSnapshots: (recordId: string) => SubmissionSnapshot[];
+  getLatestSnapshot: (recordId: string) => SubmissionSnapshot | undefined;
+
+  markRecordExported: (recordId: string) => Promise<void>;
 
   resetError: () => void;
 }
@@ -88,9 +115,15 @@ export const useStore = create<AppStore>((set, get) => ({
   conflicts: [],
   logs: [],
   syncQueue: [],
+  statusHistory: [],
+  submissionSnapshots: [],
+  recordMetaList: [],
 
   isLoading: false,
   error: null,
+
+  sessionRecovered: false,
+  lastVisitAt: null,
 
   setRole: (role: UserRole) => {
     set({ role });
@@ -116,8 +149,12 @@ export const useStore = create<AppStore>((set, get) => ({
         conflicts,
         logs,
         syncQueue,
+        statusHistory,
+        submissionSnapshots,
+        recordMetaList,
         savedRole,
         savedOffline,
+        lastVisit,
       ] = await Promise.all([
         getAllTemplates(),
         getAllDevices(),
@@ -125,9 +162,19 @@ export const useStore = create<AppStore>((set, get) => ({
         getAllConflicts(),
         getAllLogs(),
         getAllSyncQueue(),
+        getAllStatusHistory(),
+        getAllSubmissionSnapshots(),
+        getAllRecordMeta(),
         getAppState('role'),
         getAppState('offlineMode'),
+        getAppState('lastVisitAt'),
       ]);
+
+      const now = new Date().toISOString();
+      await setAppState('lastVisitAt', now);
+
+      const drafts = inspections.filter((r) => r.status === 'draft').length;
+      const pending = inspections.filter((r) => r.status === 'submitted').length;
 
       set({
         templates,
@@ -136,9 +183,14 @@ export const useStore = create<AppStore>((set, get) => ({
         conflicts,
         logs,
         syncQueue,
+        statusHistory,
+        submissionSnapshots,
+        recordMetaList,
         role: savedRole || 'inspector',
         offlineMode: savedOffline || false,
         networkStatus: savedOffline ? 'offline' : 'online',
+        lastVisitAt: lastVisit || null,
+        sessionRecovered: true,
       });
 
       if (!savedOffline) {
@@ -294,6 +346,27 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
+  getRecordMeta: (recordId: string) => {
+    return get().recordMetaList.find((m) => m.recordId === recordId);
+  },
+
+  getStatusHistory: (recordId: string) => {
+    return get().statusHistory
+      .filter((e) => e.recordId === recordId)
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  },
+
+  getSubmissionSnapshots: (recordId: string) => {
+    return get().submissionSnapshots
+      .filter((s) => s.recordId === recordId)
+      .sort((a, b) => b.snapshotAt.localeCompare(a.snapshotAt));
+  },
+
+  getLatestSnapshot: (recordId: string) => {
+    const list = get().getSubmissionSnapshots(recordId);
+    return list[0];
+  },
+
   saveInspectionDraft: async (data: Partial<InspectionRecord>) => {
     const { inspections, templates, currentUserId, currentUserName } = get();
 
@@ -307,65 +380,141 @@ export const useStore = create<AppStore>((set, get) => ({
       : 'none';
 
     const now = new Date().toISOString();
+    let record: InspectionRecord;
+    let isNew = false;
+    let prevStatus: RecordStatus | null = null;
+    let action: StatusChangeAction = 'save_draft';
 
     if (data.id) {
       const existing = inspections.find((r) => r.id === data.id);
       if (existing) {
-        const updated: InspectionRecord = {
+        prevStatus = existing.status;
+        record = {
           ...existing,
           ...data,
           anomalyLevel,
           status: 'draft',
           updatedAt: now,
+          originDeviceId: existing.originDeviceId || 'local',
         };
-        await putInspection(updated);
-        set((state) => ({
-          inspections: state.inspections.map((r) =>
-            r.id === data.id ? updated : r
-          ),
-        }));
-        return updated;
+      } else {
+        isNew = true;
+        action = 'create_draft';
+        record = {
+          id: data.id,
+          deviceId: data.deviceId || '',
+          templateId: data.templateId || '',
+          templateVersion: template?.version || 1,
+          inspectorId: currentUserId,
+          inspectorName: currentUserName,
+          date: data.date || getTodayString(),
+          values: data.values || {},
+          photos: data.photos || [],
+          anomalyLevel,
+          status: 'draft',
+          createdAt: now,
+          updatedAt: now,
+          submissionCount: 0,
+          withdrawCount: 0,
+          originDeviceId: 'local',
+        };
       }
+    } else {
+      isNew = true;
+      action = 'create_draft';
+      record = {
+        id: generateId('rec'),
+        deviceId: data.deviceId || '',
+        templateId: data.templateId || '',
+        templateVersion: template?.version || 1,
+        inspectorId: currentUserId,
+        inspectorName: currentUserName,
+        date: data.date || getTodayString(),
+        values: data.values || {},
+        photos: data.photos || [],
+        anomalyLevel,
+        status: 'draft',
+        createdAt: now,
+        updatedAt: now,
+        submissionCount: 0,
+        withdrawCount: 0,
+        originDeviceId: 'local',
+      };
     }
 
-    const newRecord: InspectionRecord = {
-      id: generateId('rec'),
-      deviceId: data.deviceId || '',
-      templateId: data.templateId || '',
-      templateVersion: template?.version || 1,
-      inspectorId: currentUserId,
-      inspectorName: currentUserName,
-      date: data.date || getTodayString(),
-      values: data.values || {},
-      photos: data.photos || [],
-      anomalyLevel,
-      status: 'draft',
-      createdAt: now,
-      updatedAt: now,
-    };
+    await putInspection(record);
 
-    await putInspection(newRecord);
+    if (isNew) {
+      const meta: RecordMeta = {
+        recordId: record.id,
+        submissionCount: 0,
+        withdrawCount: 0,
+        hasConflict: false,
+        exportCount: 0,
+      };
+      await dbPutMeta(meta);
+      set((state) => ({ recordMetaList: [...state.recordMetaList, meta] }));
+
+      const event: StatusChangeEvent = {
+        id: generateId('evt'),
+        recordId: record.id,
+        fromStatus: null,
+        toStatus: 'draft',
+        action: 'create_draft',
+        actorId: currentUserId,
+        actorName: currentUserName,
+        timestamp: now,
+        note: '创建新草稿',
+        deviceId: record.deviceId,
+        date: record.date,
+      };
+      await dbAddStatusEvent(event);
+      set((state) => ({ statusHistory: [...state.statusHistory, event] }));
+    } else if (prevStatus && prevStatus !== 'draft') {
+      const event: StatusChangeEvent = {
+        id: generateId('evt'),
+        recordId: record.id,
+        fromStatus: prevStatus,
+        toStatus: 'draft',
+        action: 'save_draft',
+        actorId: currentUserId,
+        actorName: currentUserName,
+        timestamp: now,
+        note: '编辑后保存为草稿',
+        deviceId: record.deviceId,
+        date: record.date,
+      };
+      await dbAddStatusEvent(event);
+      set((state) => ({ statusHistory: [...state.statusHistory, event] }));
+    }
 
     const existingSameDay = inspections.filter(
-      (r) => r.deviceId === newRecord.deviceId && r.date === newRecord.date && r.id !== newRecord.id
+      (r) => r.deviceId === record.deviceId && r.date === record.date && r.id !== record.id
     );
-    if (existingSameDay.length > 0) {
+    if (existingSameDay.length > 0 && isNew) {
       await get().addLogEntry({
         userId: currentUserId,
         userName: currentUserName,
         action: '保存草稿（同日多版本）',
-        target: newRecord.deviceId,
-        detail: `${newRecord.date} 该设备已有 ${existingSameDay.length + 1} 个草稿版本`,
+        target: record.deviceId,
+        detail: `${record.date} 该设备已有 ${existingSameDay.length + 1} 个草稿版本`,
         result: 'success',
       });
     }
 
-    set((state) => ({ inspections: [...state.inspections, newRecord] }));
-    return newRecord;
+    set((state) => {
+      const exists = state.inspections.some((r) => r.id === record.id);
+      return {
+        inspections: exists
+          ? state.inspections.map((r) => (r.id === record.id ? record : r))
+          : [...state.inspections, record],
+      };
+    });
+    return record;
   },
 
   submitInspection: async (data: Partial<InspectionRecord>) => {
-    const { offlineMode, inspections, templates, currentUserId, currentUserName } = get();
+    const { offlineMode, inspections, templates, currentUserId, currentUserName, recordMetaList, statusHistory } = get();
 
     const template = templates.find((t) => t.id === data.templateId);
     if (!template) throw new Error('模板不存在');
@@ -376,19 +525,28 @@ export const useStore = create<AppStore>((set, get) => ({
 
     const now = new Date().toISOString();
     let record: InspectionRecord;
+    let isNew = false;
+    let prevStatus: RecordStatus | null = null;
 
     if (data.id) {
       const existing = inspections.find((r) => r.id === data.id);
       if (existing) {
+        prevStatus = existing.status;
+        const newSubCount = (existing.submissionCount || 0) + 1;
         record = {
           ...existing,
           ...data,
           anomalyLevel,
           status: offlineMode ? 'submitted' : 'synced',
           updatedAt: now,
+          submittedAt: now,
+          firstSubmittedAt: existing.firstSubmittedAt || now,
+          submissionCount: newSubCount,
           syncedAt: offlineMode ? undefined : now,
+          originDeviceId: existing.originDeviceId || 'local',
         };
       } else {
+        isNew = true;
         record = {
           id: data.id,
           deviceId: data.deviceId || '',
@@ -403,10 +561,16 @@ export const useStore = create<AppStore>((set, get) => ({
           status: offlineMode ? 'submitted' : 'synced',
           createdAt: now,
           updatedAt: now,
+          submittedAt: now,
+          firstSubmittedAt: now,
+          submissionCount: 1,
+          withdrawCount: 0,
           syncedAt: offlineMode ? undefined : now,
+          originDeviceId: 'local',
         };
       }
     } else {
+      isNew = true;
       record = {
         id: generateId('rec'),
         deviceId: data.deviceId || '',
@@ -421,11 +585,112 @@ export const useStore = create<AppStore>((set, get) => ({
         status: offlineMode ? 'submitted' : 'synced',
         createdAt: now,
         updatedAt: now,
+        submittedAt: now,
+        firstSubmittedAt: now,
+        submissionCount: 1,
+        withdrawCount: 0,
         syncedAt: offlineMode ? undefined : now,
+        originDeviceId: 'local',
       };
     }
 
     await putInspection(record);
+
+    if (isNew) {
+      const meta: RecordMeta = {
+        recordId: record.id,
+        submissionCount: 1,
+        withdrawCount: 0,
+        firstSubmittedAt: now,
+        lastSubmittedAt: now,
+        hasConflict: false,
+        exportCount: 0,
+      };
+      await dbPutMeta(meta);
+      set((state) => ({ recordMetaList: [...state.recordMetaList, meta] }));
+
+      const evt: StatusChangeEvent = {
+        id: generateId('evt'),
+        recordId: record.id,
+        fromStatus: null,
+        toStatus: record.status,
+        action: 'submit',
+        actorId: currentUserId,
+        actorName: currentUserName,
+        timestamp: now,
+        note: '首次提交',
+        deviceId: record.deviceId,
+        date: record.date,
+      };
+      await dbAddStatusEvent(evt);
+      set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
+    } else {
+      const meta = recordMetaList.find((m) => m.recordId === record.id);
+      const isWithdrawnBefore = prevStatus === 'draft' && (meta?.withdrawCount || 0) > 0;
+      const isDuplicate = prevStatus === 'submitted';
+
+      const newMeta: RecordMeta = {
+        ...(meta || { recordId: record.id, submissionCount: 0, withdrawCount: 0, hasConflict: false, exportCount: 0 }),
+        submissionCount: record.submissionCount || 1,
+        lastSubmittedAt: now,
+        firstSubmittedAt: meta?.firstSubmittedAt || now,
+      };
+      await dbPutMeta(newMeta);
+      set((state) => ({
+        recordMetaList: state.recordMetaList.some((m) => m.recordId === record.id)
+          ? state.recordMetaList.map((m) => (m.recordId === record.id ? newMeta : m))
+          : [...state.recordMetaList, newMeta],
+      }));
+
+      const action: StatusChangeAction = isDuplicate ? 'submit' : isWithdrawnBefore ? 'resubmit' : 'submit';
+      const note = isDuplicate
+        ? '重复提交：覆盖同步队列中的版本'
+        : isWithdrawnBefore
+          ? `撤回后第${newMeta.withdrawCount}次重新提交`
+          : prevStatus === 'draft'
+            ? '草稿提交至同步队列'
+            : '提交';
+
+      if (prevStatus !== record.status || isWithdrawnBefore || isDuplicate) {
+        const evt: StatusChangeEvent = {
+          id: generateId('evt'),
+          recordId: record.id,
+          fromStatus: prevStatus,
+          toStatus: record.status,
+          action,
+          actorId: currentUserId,
+          actorName: currentUserName,
+          timestamp: now,
+          note,
+          deviceId: record.deviceId,
+          date: record.date,
+        };
+        await dbAddStatusEvent(evt);
+        set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
+      }
+    }
+
+    const device = get().devices.find((d) => d.id === record.deviceId);
+    const snapshot: SubmissionSnapshot = {
+      id: generateId('snap'),
+      recordId: record.id,
+      snapshotAt: now,
+      submittedAt: record.submittedAt || now,
+      recordValues: JSON.parse(JSON.stringify(record.values)),
+      recordPhotos: JSON.parse(JSON.stringify(record.photos)),
+      anomalyLevel: record.anomalyLevel,
+      templateName: template.name,
+      templateVersion: template.version,
+      deviceCode: device?.code || '',
+      deviceName: device?.name || '',
+      inspectorId: record.inspectorId,
+      inspectorName: record.inspectorName,
+      date: record.date,
+      submissionCount: record.submissionCount || 1,
+      withdrawCount: record.withdrawCount || 0,
+    };
+    await dbAddSnapshot(snapshot);
+    set((state) => ({ submissionSnapshots: [...state.submissionSnapshots, snapshot] }));
 
     if (offlineMode) {
       const queueItem: SyncQueueItem = {
@@ -460,11 +725,83 @@ export const useStore = create<AppStore>((set, get) => ({
       userName: currentUserName,
       action: '提交巡检记录',
       target: record.deviceId,
-      detail: `${record.date} 巡检记录已${offlineMode ? '本地保存待同步' : '同步'}`,
+      detail: `${record.date} 巡检记录已${offlineMode ? '本地保存待同步（第' + (record.submissionCount || 1) + '次提交）' : '同步'}`,
       result: 'success',
     });
 
     return record;
+  },
+
+  withdrawInspection: async (recordId: string) => {
+    const { inspections, currentUserId, currentUserName, recordMetaList, syncQueue } = get();
+    const existing = inspections.find((r) => r.id === recordId);
+    if (!existing) throw new Error('记录不存在');
+    if (existing.status !== 'submitted') throw new Error('仅待同步状态可以撤回');
+
+    const now = new Date().toISOString();
+    const newWithdrawCount = (existing.withdrawCount || 0) + 1;
+
+    const updated: InspectionRecord = {
+      ...existing,
+      status: 'draft',
+      updatedAt: now,
+      withdrawCount: newWithdrawCount,
+      lastWithdrawnAt: now,
+    };
+
+    await putInspection(updated);
+
+    const queueItem = syncQueue.find((q) => q.recordId === recordId);
+    if (queueItem) {
+      await deleteSyncQueueItem(queueItem.id);
+      set((state) => ({
+        syncQueue: state.syncQueue.filter((q) => q.id !== queueItem.id),
+      }));
+    }
+
+    const meta = recordMetaList.find((m) => m.recordId === recordId);
+    const newMeta: RecordMeta = {
+      ...(meta || { recordId, submissionCount: 0, withdrawCount: 0, hasConflict: false, exportCount: 0 }),
+      withdrawCount: newWithdrawCount,
+      lastWithdrawnAt: now,
+    };
+    await dbPutMeta(newMeta);
+    set((state) => ({
+      recordMetaList: state.recordMetaList.some((m) => m.recordId === recordId)
+        ? state.recordMetaList.map((m) => (m.recordId === recordId ? newMeta : m))
+        : [...state.recordMetaList, newMeta],
+    }));
+
+    const evt: StatusChangeEvent = {
+      id: generateId('evt'),
+      recordId,
+      fromStatus: 'submitted',
+      toStatus: 'draft',
+      action: 'withdraw',
+      actorId: currentUserId,
+      actorName: currentUserName,
+      timestamp: now,
+      note: `第${newWithdrawCount}次撤回，回到草稿区`,
+      deviceId: existing.deviceId,
+      date: existing.date,
+    };
+    await dbAddStatusEvent(evt);
+    set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
+
+    set((state) => ({
+      inspections: state.inspections.map((r) => (r.id === recordId ? updated : r)),
+    }));
+
+    await get().addLogEntry({
+      userId: currentUserId,
+      userName: currentUserName,
+      action: '撤回至草稿',
+      target: recordId,
+      detail: `从同步队列撤回，回到草稿区（第${newWithdrawCount}次撤回）`,
+      result: 'success',
+    });
+
+    return updated;
   },
 
   syncAll: async () => {
@@ -474,7 +811,7 @@ export const useStore = create<AppStore>((set, get) => ({
     let errorCount = 0;
 
     const pendingRecords = inspections.filter(
-      (r) => r.status === 'submitted' || r.status === 'draft'
+      (r) => r.status === 'submitted'
     );
 
     if (pendingRecords.length === 0) {
@@ -490,6 +827,7 @@ export const useStore = create<AppStore>((set, get) => ({
 
       const newInspections = [...inspections];
       const newConflicts: ConflictRecord[] = [...get().conflicts];
+      const now = new Date().toISOString();
 
       for (const item of result.results) {
         const idx = newInspections.findIndex((r) => r.id === item.recordId);
@@ -499,9 +837,31 @@ export const useStore = create<AppStore>((set, get) => ({
           newInspections[idx] = {
             ...newInspections[idx],
             status: 'synced',
-            syncedAt: new Date().toISOString(),
+            syncedAt: now,
           };
           await putInspection(newInspections[idx]);
+
+          const evt: StatusChangeEvent = {
+            id: generateId('evt'),
+            recordId: item.recordId,
+            fromStatus: 'submitted',
+            toStatus: 'synced',
+            action: 'sync_success',
+            actorId: currentUserId,
+            actorName: currentUserName,
+            timestamp: now,
+            note: '同步成功',
+            deviceId: newInspections[idx].deviceId,
+            date: newInspections[idx].date,
+          };
+          await dbAddStatusEvent(evt);
+          set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
+
+          const queueIdx = get().syncQueue.findIndex((q) => q.recordId === item.recordId);
+          if (queueIdx >= 0) {
+            await dbDeleteSyncItem(get().syncQueue[queueIdx].id);
+          }
+
           successCount++;
         } else if (item.status === 'conflict' && item.conflictId) {
           newInspections[idx] = {
@@ -510,8 +870,46 @@ export const useStore = create<AppStore>((set, get) => ({
             conflictId: item.conflictId,
           };
           await putInspection(newInspections[idx]);
+
+          const evt: StatusChangeEvent = {
+            id: generateId('evt'),
+            recordId: item.recordId,
+            fromStatus: 'submitted',
+            toStatus: 'conflict',
+            action: 'conflict_detected',
+            actorId: currentUserId,
+            actorName: currentUserName,
+            timestamp: now,
+            note: `同步检测到冲突：${item.conflictId}`,
+            deviceId: newInspections[idx].deviceId,
+            date: newInspections[idx].date,
+          };
+          await dbAddStatusEvent(evt);
+          set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
+
+          const meta = get().recordMetaList.find((m) => m.recordId === item.recordId);
+          if (meta) {
+            const updatedMeta: RecordMeta = { ...meta, hasConflict: true };
+            await dbPutMeta(updatedMeta);
+          }
+
           conflictCount++;
         } else {
+          const evt: StatusChangeEvent = {
+            id: generateId('evt'),
+            recordId: item.recordId,
+            fromStatus: 'submitted',
+            toStatus: 'submitted',
+            action: 'sync_fail',
+            actorId: currentUserId,
+            actorName: currentUserName,
+            timestamp: now,
+            note: '同步失败，保留待同步状态',
+            deviceId: newInspections[idx].deviceId,
+            date: newInspections[idx].date,
+          };
+          await dbAddStatusEvent(evt);
+          set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
           errorCount++;
         }
       }
@@ -526,7 +924,12 @@ export const useStore = create<AppStore>((set, get) => ({
       set({
         inspections: newInspections,
         conflicts: newConflicts.filter((c) => !c.resolved),
-        syncQueue: [],
+        syncQueue: get().syncQueue.filter((q) => !pendingRecords.some((r) => r.id === q.recordId)),
+        recordMetaList: get().recordMetaList.map((m) => {
+          const r = newInspections.find((i) => i.id === m.recordId);
+          if (!r) return m;
+          return { ...m, hasConflict: r.status === 'conflict' || m.hasConflict };
+        }),
       });
 
       await get().addLogEntry({
@@ -547,9 +950,9 @@ export const useStore = create<AppStore>((set, get) => ({
 
   resolveConflict: async (
     conflictId: string,
-    resolution: 'keep-local' | 'keep-remote' | 'merge'
+    resolution: ConflictResolution
   ) => {
-    const { conflicts, inspections, currentUserId, currentUserName } = get();
+    const { conflicts, inspections, currentUserId, currentUserName, recordMetaList } = get();
     const conflict = conflicts.find((c) => c.id === conflictId);
     if (!conflict) throw new Error('冲突不存在');
 
@@ -560,17 +963,83 @@ export const useStore = create<AppStore>((set, get) => ({
       currentUserName
     );
 
+    result.conflict.resolvedBy = currentUserId;
+    result.conflict.resolvedByName = currentUserName;
+
     await putInspection(result.record);
     await putConflict(result.conflict);
+
+    const now = new Date().toISOString();
+    const evt: StatusChangeEvent = {
+      id: generateId('evt'),
+      recordId: result.record.id,
+      fromStatus: 'conflict',
+      toStatus: 'synced',
+      action: 'conflict_resolved',
+      actorId: currentUserId,
+      actorName: currentUserName,
+      timestamp: now,
+      note: `冲突已解决，采用：${resolution === 'keep-local' ? '本地版本' : resolution === 'keep-remote' ? '远端版本' : '合并版本'}`,
+      deviceId: result.record.deviceId,
+      date: result.record.date,
+    };
+    await dbAddStatusEvent(evt);
+
+    const meta = recordMetaList.find((m) => m.recordId === result.record.id);
+    if (meta) {
+      const updatedMeta: RecordMeta = {
+        ...meta,
+        hasConflict: false,
+        lastConflictResolution: resolution,
+        lastConflictResolvedAt: now,
+      };
+      await dbPutMeta(updatedMeta);
+    }
+
+    const device = get().devices.find((d) => d.id === result.record.deviceId);
+    const tpl = get().templates.find((t) => t.id === result.record.templateId);
+    const snapshot: SubmissionSnapshot = {
+      id: generateId('snap'),
+      recordId: result.record.id,
+      snapshotAt: now,
+      submittedAt: result.record.submittedAt || result.record.createdAt,
+      recordValues: JSON.parse(JSON.stringify(result.record.values)),
+      recordPhotos: JSON.parse(JSON.stringify(result.record.photos)),
+      anomalyLevel: result.record.anomalyLevel,
+      templateName: tpl?.name || '',
+      templateVersion: result.record.templateVersion,
+      deviceCode: device?.code || '',
+      deviceName: device?.name || '',
+      inspectorId: result.record.inspectorId,
+      inspectorName: result.record.inspectorName,
+      date: result.record.date,
+      submissionCount: result.record.submissionCount || 1,
+      withdrawCount: result.record.withdrawCount || 0,
+      conflictResolution: resolution,
+      conflictResolvedAt: now,
+    };
+    await dbAddSnapshot(snapshot);
 
     set((state) => ({
       conflicts: state.conflicts.map((c) =>
         c.id === conflictId ? result.conflict : c
-      ),
+      ).filter((c) => !c.resolved),
       inspections: state.inspections.map((r) =>
         r.id === conflict.localVersion.id || r.id === conflict.remoteVersion.id
           ? result.record
           : r
+      ),
+      statusHistory: [...state.statusHistory, evt],
+      submissionSnapshots: [...state.submissionSnapshots, snapshot],
+      recordMetaList: state.recordMetaList.map((m) =>
+        m.recordId === result.record.id
+          ? {
+              ...m,
+              hasConflict: false,
+              lastConflictResolution: resolution,
+              lastConflictResolvedAt: now,
+            }
+          : m
       ),
     }));
   },
@@ -583,6 +1052,18 @@ export const useStore = create<AppStore>((set, get) => ({
     };
     await dbAddLog(newLog);
     set((state) => ({ logs: [newLog, ...state.logs].slice(0, 500) }));
+  },
+
+  markRecordExported: async (recordId: string) => {
+    const meta = get().recordMetaList.find((m) => m.recordId === recordId);
+    if (!meta) return;
+    const updated: RecordMeta = { ...meta, exportCount: meta.exportCount + 1 };
+    await dbPutMeta(updated);
+    set((state) => ({
+      recordMetaList: state.recordMetaList.map((m) =>
+        m.recordId === recordId ? updated : m
+      ),
+    }));
   },
 
   resetError: () => set({ error: null }),

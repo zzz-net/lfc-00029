@@ -7,6 +7,9 @@ import type {
   OperationLog,
   SyncQueueItem,
   AppState,
+  StatusChangeEvent,
+  SubmissionSnapshot,
+  RecordMeta,
 } from '@/types';
 
 interface InspectionDB extends DBSchema {
@@ -21,7 +24,7 @@ interface InspectionDB extends DBSchema {
   inspections: {
     key: string;
     value: InspectionRecord;
-    indexes: { 'by-device-date': [string, string] };
+    indexes: { 'by-device-date': [string, string]; 'by-status': string; 'by-date': string };
   };
   conflicts: {
     key: string;
@@ -39,17 +42,31 @@ interface InspectionDB extends DBSchema {
     key: string;
     value: any;
   };
+  statusHistory: {
+    key: string;
+    value: StatusChangeEvent;
+    indexes: { 'by-record': string; 'by-record-timestamp': [string, string]; 'by-device': string };
+  };
+  submissionSnapshots: {
+    key: string;
+    value: SubmissionSnapshot;
+    indexes: { 'by-record': string; 'by-record-snapshot': [string, string] };
+  };
+  recordMeta: {
+    key: string;
+    value: RecordMeta;
+  };
 }
 
 const DB_NAME = 'inspection-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase<InspectionDB>> | null = null;
 
 export function getDB(): Promise<IDBPDatabase<InspectionDB>> {
   if (!dbPromise) {
     dbPromise = openDB<InspectionDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion) {
         if (!db.objectStoreNames.contains('templates')) {
           db.createObjectStore('templates', { keyPath: 'id' });
         }
@@ -59,6 +76,15 @@ export function getDB(): Promise<IDBPDatabase<InspectionDB>> {
         if (!db.objectStoreNames.contains('inspections')) {
           const store = db.createObjectStore('inspections', { keyPath: 'id' });
           store.createIndex('by-device-date', ['deviceId', 'date']);
+        }
+        if (oldVersion < 2) {
+          const inspStore = db.objectStore('inspections');
+          if (!inspStore.indexNames.contains('by-status')) {
+            inspStore.createIndex('by-status', 'status');
+          }
+          if (!inspStore.indexNames.contains('by-date')) {
+            inspStore.createIndex('by-date', 'date');
+          }
         }
         if (!db.objectStoreNames.contains('conflicts')) {
           db.createObjectStore('conflicts', { keyPath: 'id' });
@@ -71,6 +97,20 @@ export function getDB(): Promise<IDBPDatabase<InspectionDB>> {
         }
         if (!db.objectStoreNames.contains('appState')) {
           db.createObjectStore('appState', { keyPath: 'key' });
+        }
+        if (!db.objectStoreNames.contains('statusHistory')) {
+          const sh = db.createObjectStore('statusHistory', { keyPath: 'id' });
+          sh.createIndex('by-record', 'recordId');
+          sh.createIndex('by-record-timestamp', ['recordId', 'timestamp']);
+          sh.createIndex('by-device', 'deviceId');
+        }
+        if (!db.objectStoreNames.contains('submissionSnapshots')) {
+          const ss = db.createObjectStore('submissionSnapshots', { keyPath: 'id' });
+          ss.createIndex('by-record', 'recordId');
+          ss.createIndex('by-record-snapshot', ['recordId', 'snapshotAt']);
+        }
+        if (!db.objectStoreNames.contains('recordMeta')) {
+          db.createObjectStore('recordMeta', { keyPath: 'recordId' });
         }
       },
     });
@@ -225,10 +265,101 @@ export async function setAppState(key: string, value: any): Promise<void> {
   await db.put('appState', { key, value });
 }
 
+export async function getAllStatusHistory(): Promise<StatusChangeEvent[]> {
+  const db = await getDB();
+  return db.getAll('statusHistory');
+}
+
+export async function getStatusHistoryByRecord(recordId: string): Promise<StatusChangeEvent[]> {
+  const db = await getDB();
+  const all = await db.getAllFromIndex('statusHistory', 'by-record', recordId);
+  return all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+}
+
+export async function getLastStatusChange(recordId: string): Promise<StatusChangeEvent | undefined> {
+  const history = await getStatusHistoryByRecord(recordId);
+  return history[0];
+}
+
+export async function addStatusChangeEvent(event: StatusChangeEvent): Promise<void> {
+  const db = await getDB();
+  await db.add('statusHistory', event);
+}
+
+export async function addStatusChangeEvents(events: StatusChangeEvent[]): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction('statusHistory', 'readwrite');
+  for (const e of events) {
+    await tx.store.add(e);
+  }
+  await tx.done;
+}
+
+export async function deleteStatusHistoryByRecord(recordId: string): Promise<void> {
+  const db = await getDB();
+  const items = await db.getAllFromIndex('statusHistory', 'by-record', recordId);
+  const tx = db.transaction('statusHistory', 'readwrite');
+  for (const item of items) {
+    await tx.store.delete(item.id);
+  }
+  await tx.done;
+}
+
+export async function getAllSubmissionSnapshots(): Promise<SubmissionSnapshot[]> {
+  const db = await getDB();
+  return db.getAll('submissionSnapshots');
+}
+
+export async function getSubmissionSnapshotsByRecord(recordId: string): Promise<SubmissionSnapshot[]> {
+  const db = await getDB();
+  const all = await db.getAllFromIndex('submissionSnapshots', 'by-record', recordId);
+  return all.sort((a, b) => b.snapshotAt.localeCompare(a.snapshotAt));
+}
+
+export async function getLatestSubmissionSnapshot(recordId: string): Promise<SubmissionSnapshot | undefined> {
+  const list = await getSubmissionSnapshotsByRecord(recordId);
+  return list[0];
+}
+
+export async function addSubmissionSnapshot(snapshot: SubmissionSnapshot): Promise<void> {
+  const db = await getDB();
+  await db.add('submissionSnapshots', snapshot);
+}
+
+export async function deleteSubmissionSnapshotsByRecord(recordId: string): Promise<void> {
+  const db = await getDB();
+  const items = await db.getAllFromIndex('submissionSnapshots', 'by-record', recordId);
+  const tx = db.transaction('submissionSnapshots', 'readwrite');
+  for (const item of items) {
+    await tx.store.delete(item.id);
+  }
+  await tx.done;
+}
+
+export async function getAllRecordMeta(): Promise<RecordMeta[]> {
+  const db = await getDB();
+  return db.getAll('recordMeta');
+}
+
+export async function getRecordMeta(recordId: string): Promise<RecordMeta | undefined> {
+  const db = await getDB();
+  return db.get('recordMeta', recordId);
+}
+
+export async function putRecordMeta(meta: RecordMeta): Promise<void> {
+  const db = await getDB();
+  await db.put('recordMeta', meta);
+}
+
+export async function deleteRecordMeta(recordId: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('recordMeta', recordId);
+}
+
 export async function clearAllData(): Promise<void> {
   const db = await getDB();
   const tx = db.transaction(
-    ['templates', 'devices', 'inspections', 'conflicts', 'logs', 'syncQueue'],
+    ['templates', 'devices', 'inspections', 'conflicts', 'logs', 'syncQueue', 'statusHistory', 'submissionSnapshots', 'recordMeta'],
     'readwrite'
   );
   await Promise.all([
@@ -238,6 +369,9 @@ export async function clearAllData(): Promise<void> {
     tx.objectStore('conflicts').clear(),
     tx.objectStore('logs').clear(),
     tx.objectStore('syncQueue').clear(),
+    tx.objectStore('statusHistory').clear(),
+    tx.objectStore('submissionSnapshots').clear(),
+    tx.objectStore('recordMeta').clear(),
   ]);
   await tx.done;
 }

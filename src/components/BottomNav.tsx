@@ -1,4 +1,4 @@
-import { Home, ClipboardList, RefreshCw, FileText, Settings, type LucideIcon } from 'lucide-react';
+import { Home, ClipboardList, RefreshCw, FileText, Settings, LayoutDashboard, type LucideIcon } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useStore } from '@/store/useStore';
 
@@ -11,17 +11,18 @@ interface TabItem {
 
 export default function BottomNav() {
   const location = useLocation();
-  const { role, offlineMode, conflicts } = useStore();
+  const { role, offlineMode, conflicts, inspections } = useStore();
 
   const isInspector = role === 'inspector';
   const conflictCount = conflicts.filter(c => !c.resolved).length;
+  const pendingSyncCount = inspections.filter(r => r.status === 'submitted').length;
 
   const inspectorTabs: TabItem[] = [
     { path: '/', icon: Home, label: '首页' },
     { path: '/inspections', icon: ClipboardList, label: '巡检' },
+    { path: '/status-desk', icon: LayoutDashboard, label: '状态台', badge: pendingSyncCount + conflictCount },
     { path: '/sync', icon: RefreshCw, label: '同步', badge: conflictCount },
     { path: '/export', icon: FileText, label: '导出' },
-    { path: '/logs', icon: Settings, label: '日志' },
   ];
 
   const adminTabs: TabItem[] = [
