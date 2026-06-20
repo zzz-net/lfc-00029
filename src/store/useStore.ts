@@ -45,6 +45,11 @@ import {
   detectStaleDrafts,
   validateImportData,
   parseCsvToRecords,
+  buildFullExportData,
+  flattenForCsv,
+  checkImportConflicts,
+  checkFieldCompatibility,
+  applyFieldCompatibilityFix,
 } from '@/lib/submissionWorkbench';
 import { featureFlags } from '@/config/appConfig';
 import { apiClient } from '@/api/client';
@@ -1459,8 +1464,17 @@ export const useStore = create<AppStore>((set, get) => ({
     return buildTimelineEvents(adapted);
   },
 
-  exportRecords: async (filter: ExportFilter, _format: ExportFormat) => {
-    const { inspections, devices, templates } = get();
+  exportRecords: async (filter: ExportFilter, format: ExportFormat, options?: { fullData?: boolean }) => {
+    const {
+      inspections,
+      devices,
+      templates,
+      statusHistory,
+      submissionSnapshots,
+      submissionReceipts,
+      auditLogs,
+      recordMetaList,
+    } = get();
     let records = [...inspections];
 
     if (filter.startDate) {
@@ -1477,6 +1491,29 @@ export const useStore = create<AppStore>((set, get) => ({
     }
     if (filter.inspectorIds && filter.inspectorIds.length > 0) {
       records = records.filter((r) => filter.inspectorIds!.includes(r.inspectorId));
+    }
+
+    if (options?.fullData && format === 'json') {
+      return buildFullExportData(
+        records,
+        statusHistory,
+        submissionSnapshots,
+        submissionReceipts,
+        auditLogs,
+        recordMetaList
+      );
+    }
+
+    if (format === 'csv' || format === 'json') {
+      const fullData = buildFullExportData(
+        records,
+        statusHistory,
+        submissionSnapshots,
+        submissionReceipts,
+        auditLogs,
+        recordMetaList
+      );
+      return flattenForCsv(fullData, devices, templates);
     }
 
     return records.map((r) => {
@@ -1498,6 +1535,7 @@ export const useStore = create<AppStore>((set, get) => ({
         inspectorId: r.inspectorId,
         inspectorName: r.inspectorName,
         values: r.values,
+        photos: r.photos,
         photoCount: r.photos.length,
         anomalyLevel: r.anomalyLevel,
         status: r.status,
@@ -1630,19 +1668,67 @@ export const useStore = create<AppStore>((set, get) => ({
     return updated;
   },
 
-  importRecords: async (data: any[], format: 'json' | 'csv') => {
-    const { inspections, currentUserId, currentUserName } = get();
+  importRecords: async (data: any[], format: 'json' | 'csv', options?: { skipDuplicateId?: boolean; autoFixCompatibility?: boolean }) => {
+    const {
+      inspections,
+      templates,
+      currentUserId,
+      currentUserName,
+      statusHistory,
+      submissionSnapshots,
+      submissionReceipts,
+      auditLogs,
+    } = get();
+
     let parsedData = data;
     if (format === 'csv' && data.length > 0 && typeof data[0] === 'string') {
       parsedData = parseCsvToRecords(data[0] as string);
     }
 
-    const { valid, skipped, errors } = validateImportData(parsedData, inspections);
+    const isFullFormat = parsedData.length > 0 && parsedData[0].record && parsedData[0].statusHistory;
+
+    let recordsToImport: any[];
+    let relatedHistory: StatusChangeEvent[] = [];
+    let relatedSnapshots: SubmissionSnapshot[] = [];
+    let relatedReceipts: SubmissionReceipt[] = [];
+    let relatedAuditLogs: AuditLogEntry[] = [];
+    let relatedMeta: RecordMeta[] = [];
+
+    if (isFullFormat) {
+      recordsToImport = parsedData.map((d: any) => d.record);
+      for (const item of parsedData) {
+        if (item.statusHistory) relatedHistory.push(...item.statusHistory);
+        if (item.snapshots) relatedSnapshots.push(...item.snapshots);
+        if (item.receipts) relatedReceipts.push(...item.receipts);
+        if (item.auditLogs) relatedAuditLogs.push(...item.auditLogs);
+        if (item.meta) relatedMeta.push(item.meta);
+      }
+    } else {
+      recordsToImport = parsedData;
+    }
+
+    const { valid, skipped, errors, warnings } = validateImportData(recordsToImport, inspections, options);
+
+    const importConflicts = checkImportConflicts(valid, inspections);
+    const compatibilityReports = checkFieldCompatibility(valid, templates);
+
+    let finalRecords = valid;
+    if (options?.autoFixCompatibility) {
+      finalRecords = valid.map(record => {
+        const template = templates.find(t => t.id === record.templateId);
+        if (template && record.templateVersion < template.version) {
+          return applyFieldCompatibilityFix(record, template);
+        }
+        return record;
+      });
+    }
 
     const importedIds: string[] = [];
-    for (const record of valid) {
+    for (const record of finalRecords) {
       await putInspection(record);
-      const meta: RecordMeta = {
+
+      const existingMeta = relatedMeta.find(m => m.recordId === record.id);
+      const meta: RecordMeta = existingMeta || {
         recordId: record.id,
         submissionCount: record.submissionCount || 0,
         withdrawCount: record.withdrawCount || 0,
@@ -1650,19 +1736,75 @@ export const useStore = create<AppStore>((set, get) => ({
         exportCount: 0,
       };
       await dbPutMeta(meta);
+
+      const recordHistory = relatedHistory.filter(h => h.recordId === record.id);
+      for (const evt of recordHistory) {
+        try {
+          await dbAddStatusEvent(evt);
+        } catch (e) {
+          console.warn('Failed to import status history event:', e);
+        }
+      }
+
+      const recordSnapshots = relatedSnapshots.filter(s => s.recordId === record.id);
+      for (const snap of recordSnapshots) {
+        try {
+          await dbAddSnapshot(snap);
+        } catch (e) {
+          console.warn('Failed to import snapshot:', e);
+        }
+      }
+
+      const recordReceipts = relatedReceipts.filter(r => r.recordId === record.id);
+      for (const receipt of recordReceipts) {
+        try {
+          await dbPutReceipt(receipt);
+        } catch (e) {
+          console.warn('Failed to import receipt:', e);
+        }
+      }
+
+      const recordAuditLogs = relatedAuditLogs.filter(a => a.recordId === record.id);
+      for (const log of recordAuditLogs) {
+        try {
+          await dbAddAuditLog(log);
+        } catch (e) {
+          console.warn('Failed to import audit log:', e);
+        }
+      }
+
       importedIds.push(record.id);
     }
 
-    set((state) => ({
-      inspections: [...valid, ...state.inspections],
-      recordMetaList: [...valid.map(r => ({
-        recordId: r.id,
-        submissionCount: r.submissionCount || 0,
-        withdrawCount: r.withdrawCount || 0,
-        hasConflict: r.status === 'conflict',
-        exportCount: 0,
-      })), ...state.recordMetaList],
-    }));
+    set((state) => {
+      const newInspections = [...finalRecords, ...state.inspections];
+      const newMetaList = [
+        ...finalRecords.map(r => {
+          const existing = relatedMeta.find(m => m.recordId === r.id);
+          return existing || {
+            recordId: r.id,
+            submissionCount: r.submissionCount || 0,
+            withdrawCount: r.withdrawCount || 0,
+            hasConflict: r.status === 'conflict',
+            exportCount: 0,
+          };
+        }),
+        ...state.recordMetaList,
+      ];
+      const newStatusHistory = [...relatedHistory.filter(h => importedIds.includes(h.recordId)), ...state.statusHistory];
+      const newSnapshots = [...relatedSnapshots.filter(s => importedIds.includes(s.recordId)), ...state.submissionSnapshots];
+      const newReceipts = [...relatedReceipts.filter(r => importedIds.includes(r.recordId)), ...state.submissionReceipts];
+      const newAuditLogs = [...relatedAuditLogs.filter(a => importedIds.includes(a.recordId)), ...state.auditLogs];
+
+      return {
+        inspections: newInspections,
+        recordMetaList: newMetaList,
+        statusHistory: newStatusHistory,
+        submissionSnapshots: newSnapshots,
+        submissionReceipts: newReceipts,
+        auditLogs: newAuditLogs,
+      };
+    });
 
     if (importedIds.length > 0) {
       await get().addLogEntry({
@@ -1670,17 +1812,20 @@ export const useStore = create<AppStore>((set, get) => ({
         userName: currentUserName,
         action: '导入提交单数据',
         target: 'import',
-        detail: `导入 ${valid.length} 条记录，跳过 ${skipped.length} 条（ID重复），失败 ${errors.length} 条`,
-        result: errors.length > 0 ? 'conflict' : 'success',
+        detail: `导入 ${finalRecords.length} 条记录，跳过 ${skipped.length} 条，失败 ${errors.length} 条，警告 ${warnings.length} 条${importConflicts.length > 0 ? `，冲突 ${importConflicts.length} 条` : ''}`,
+        result: errors.length > 0 || importConflicts.length > 0 ? 'conflict' : 'success',
       });
     }
 
     return {
-      successCount: valid.length,
+      successCount: finalRecords.length,
       failCount: errors.length,
       skippedCount: skipped.length,
       errors,
       importedIds,
+      warnings,
+      conflicts: importConflicts,
+      compatibilityReports,
     };
   },
 

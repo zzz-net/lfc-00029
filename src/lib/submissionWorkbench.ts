@@ -4,6 +4,7 @@ import type {
   TemplateField,
   RecordStatus,
   StatusChangeAction,
+  StatusChangeEvent,
   ValidationResult,
   ValidationErrorItem,
   ValidationWarningItem,
@@ -13,6 +14,11 @@ import type {
   ImportResult,
   ImportErrorItem,
   ButtonActionState,
+  SubmissionSnapshot,
+  SubmissionReceipt,
+  AuditLogEntry,
+  RecordMeta,
+  Device,
 } from '@/types';
 import { validateRecord, type ValidationError } from '@/utils/validation';
 import { statusConfig, actionConfig, validationMessages, featureFlags, buttonDisableReasons } from '@/config/appConfig';
@@ -314,64 +320,334 @@ export function detectStaleDrafts(
 
 export function validateImportData(
   data: any[],
-  existingRecords: InspectionRecord[]
-): { valid: InspectionRecord[]; skipped: InspectionRecord[]; errors: ImportErrorItem[] } {
+  existingRecords: InspectionRecord[],
+  options?: { skipDuplicateId?: boolean }
+): { valid: InspectionRecord[]; skipped: InspectionRecord[]; errors: ImportErrorItem[]; warnings: string[] } {
   const valid: InspectionRecord[] = [];
   const skipped: InspectionRecord[] = [];
   const errors: ImportErrorItem[] = [];
+  const warnings: string[] = [];
   const existingIds = new Set(existingRecords.map(r => r.id));
+  const seenIds = new Set<string>();
 
   for (let i = 0; i < data.length; i++) {
     const row = data[i];
+    const rowNum = i + 1;
+
     if (!row || typeof row !== 'object') {
-      errors.push({ row: i + 1, reason: '数据格式不正确' });
+      errors.push({ row: rowNum, reason: '数据格式不正确' });
       continue;
     }
+
     if (!row.id || typeof row.id !== 'string') {
-      errors.push({ row: i + 1, id: row.id, reason: '缺少记录ID或格式错误' });
+      errors.push({ row: rowNum, id: row.id, reason: '缺少记录ID或格式错误' });
       continue;
     }
+
+    if (seenIds.has(row.id)) {
+      errors.push({ row: rowNum, id: row.id, reason: '文件内存在重复记录ID' });
+      continue;
+    }
+    seenIds.add(row.id);
+
     if (!row.deviceId || !row.templateId || !row.date) {
-      errors.push({ row: i + 1, id: row.id, reason: '缺少必要字段（deviceId/templateId/date）' });
+      errors.push({ row: rowNum, id: row.id, reason: '缺少必要字段（deviceId/templateId/date）' });
       continue;
     }
-    if (existingIds.has(row.id)) {
+
+    if (existingIds.has(row.id) && !options?.skipDuplicateId) {
       skipped.push(row as InspectionRecord);
       continue;
     }
+
     const status: RecordStatus = row.status || 'draft';
     const validStatuses: RecordStatus[] = ['draft', 'submitted', 'synced', 'conflict', 'withdrawn', 'resumed'];
     if (!validStatuses.includes(status)) {
-      errors.push({ row: i + 1, id: row.id, reason: `无效的状态值: ${status}` });
+      errors.push({ row: rowNum, id: row.id, reason: `无效的状态值: ${status}` });
       continue;
     }
+
     const record: InspectionRecord = {
       id: row.id,
       deviceId: row.deviceId,
       templateId: row.templateId,
-      templateVersion: row.templateVersion || 1,
+      templateVersion: Number(row.templateVersion) || 1,
       inspectorId: row.inspectorId || 'imported',
       inspectorName: row.inspectorName || '导入',
       date: row.date,
-      values: row.values || {},
-      photos: row.photos || [],
+      values: typeof row.values === 'string' ? safeJsonParse(row.values, {}) : row.values || {},
+      photos: typeof row.photos === 'string' ? safeJsonParse(row.photos, []) : row.photos || [],
       anomalyLevel: row.anomalyLevel || 'none',
       status,
       createdAt: row.createdAt || new Date().toISOString(),
       updatedAt: row.updatedAt || new Date().toISOString(),
-      syncedAt: row.syncedAt,
-      conflictId: row.conflictId,
-      submittedAt: row.submittedAt,
-      firstSubmittedAt: row.firstSubmittedAt,
-      submissionCount: row.submissionCount || 0,
-      withdrawCount: row.withdrawCount || 0,
-      lastWithdrawnAt: row.lastWithdrawnAt,
+      syncedAt: row.syncedAt || undefined,
+      conflictId: row.conflictId || undefined,
+      submittedAt: row.submittedAt || undefined,
+      firstSubmittedAt: row.firstSubmittedAt || undefined,
+      submissionCount: Number(row.submissionCount) || 0,
+      withdrawCount: Number(row.withdrawCount) || 0,
+      lastWithdrawnAt: row.lastWithdrawnAt || undefined,
       originDeviceId: row.originDeviceId || 'imported',
     };
+
+    if (record.templateVersion < 1) {
+      warnings.push(`行 ${rowNum} (${row.id}): 模板版本号异常，已重置为 1`);
+      record.templateVersion = 1;
+    }
+
     valid.push(record);
   }
 
-  return { valid, skipped, errors };
+  return { valid, skipped, errors, warnings };
+}
+
+function safeJsonParse(str: string, fallback: any): any {
+  try {
+    return JSON.parse(str);
+  } catch {
+    return fallback;
+  }
+}
+
+export interface FullExportRecord {
+  record: InspectionRecord;
+  statusHistory: StatusChangeEvent[];
+  snapshots: SubmissionSnapshot[];
+  receipts: SubmissionReceipt[];
+  auditLogs: AuditLogEntry[];
+  meta: RecordMeta;
+}
+
+export function buildFullExportData(
+  records: InspectionRecord[],
+  allHistory: StatusChangeEvent[],
+  allSnapshots: SubmissionSnapshot[],
+  allReceipts: SubmissionReceipt[],
+  allAuditLogs: AuditLogEntry[],
+  allMeta: RecordMeta[]
+): FullExportRecord[] {
+  return records.map(record => ({
+    record,
+    statusHistory: allHistory.filter(h => h.recordId === record.id),
+    snapshots: allSnapshots.filter(s => s.recordId === record.id),
+    receipts: allReceipts.filter(r => r.recordId === record.id),
+    auditLogs: allAuditLogs.filter(a => a.recordId === record.id),
+    meta: allMeta.find(m => m.recordId === record.id) || {
+      recordId: record.id,
+      submissionCount: record.submissionCount || 0,
+      withdrawCount: record.withdrawCount || 0,
+      hasConflict: record.status === 'conflict',
+      exportCount: 0,
+    },
+  }));
+}
+
+export function flattenForCsv(
+  fullData: FullExportRecord[],
+  devices: Device[],
+  templates: Template[]
+): any[] {
+  return fullData.map(item => {
+    const device = devices.find(d => d.id === item.record.deviceId);
+    const template = templates.find(t => t.id === item.record.templateId);
+    const latestReceipt = item.receipts[0];
+    return {
+      id: item.record.id,
+      deviceId: item.record.deviceId,
+      deviceCode: device?.code || '',
+      deviceName: device?.name || '',
+      deviceLocation: device?.location || '',
+      deviceCategory: device?.category || '',
+      templateId: item.record.templateId,
+      templateName: template?.name || '',
+      templateVersion: item.record.templateVersion,
+      inspectorId: item.record.inspectorId,
+      inspectorName: item.record.inspectorName,
+      date: item.record.date,
+      status: item.record.status,
+      anomalyLevel: item.record.anomalyLevel,
+      submissionCount: item.record.submissionCount || 0,
+      withdrawCount: item.record.withdrawCount || 0,
+      photoCount: item.record.photos.length,
+      values: JSON.stringify(item.record.values),
+      photos: JSON.stringify(item.record.photos),
+      createdAt: item.record.createdAt,
+      updatedAt: item.record.updatedAt,
+      submittedAt: item.record.submittedAt || '',
+      firstSubmittedAt: item.record.firstSubmittedAt || '',
+      lastWithdrawnAt: item.record.lastWithdrawnAt || '',
+      syncedAt: item.record.syncedAt || '',
+      originDeviceId: item.record.originDeviceId || '',
+      hasConflict: item.meta.hasConflict,
+      conflictResolution: item.meta.lastConflictResolution || '',
+      receiptNo: latestReceipt?.receiptNo || '',
+      sourceDevice: latestReceipt?.sourceDeviceInfo || '',
+      exportCount: item.meta.exportCount,
+      statusHistoryCount: item.statusHistory.length,
+      snapshotCount: item.snapshots.length,
+      auditLogCount: item.auditLogs.length,
+    };
+  });
+}
+
+export interface ImportConflictInfo {
+  recordId: string;
+  type: 'id_duplicate' | 'same_device_date' | 'values_hash_match';
+  existingStatus?: RecordStatus;
+  existingUpdatedAt?: string;
+  detail: string;
+}
+
+export function checkImportConflicts(
+  importRecords: InspectionRecord[],
+  existingRecords: InspectionRecord[]
+): ImportConflictInfo[] {
+  const conflicts: ImportConflictInfo[] = [];
+  const existingById = new Map(existingRecords.map(r => [r.id, r]));
+  const existingByDeviceDate = new Map<string, InspectionRecord>();
+
+  for (const r of existingRecords) {
+    if (r.status === 'submitted' || r.status === 'synced') {
+      const key = `${r.deviceId}_${r.date}`;
+      if (!existingByDeviceDate.has(key)) {
+        existingByDeviceDate.set(key, r);
+      }
+    }
+  }
+
+  for (const record of importRecords) {
+    if (existingById.has(record.id)) {
+      const existing = existingById.get(record.id)!;
+      conflicts.push({
+        recordId: record.id,
+        type: 'id_duplicate',
+        existingStatus: existing.status,
+        existingUpdatedAt: existing.updatedAt,
+        detail: `记录ID已存在，当前状态：${existing.status}`,
+      });
+      continue;
+    }
+
+    const key = `${record.deviceId}_${record.date}`;
+    const sameDayDevice = existingByDeviceDate.get(key);
+    if (sameDayDevice && (record.status === 'submitted' || record.status === 'synced')) {
+      const importHash = computeValuesHash(record.values);
+      const existingHash = computeValuesHash(sameDayDevice.values);
+      if (importHash === existingHash) {
+        conflicts.push({
+          recordId: record.id,
+          type: 'values_hash_match',
+          existingStatus: sameDayDevice.status,
+          existingUpdatedAt: sameDayDevice.updatedAt,
+          detail: '同设备同日且数据内容完全相同',
+        });
+      } else {
+        conflicts.push({
+          recordId: record.id,
+          type: 'same_device_date',
+          existingStatus: sameDayDevice.status,
+          existingUpdatedAt: sameDayDevice.updatedAt,
+          detail: '同设备同日已有提交记录，但内容不同',
+        });
+      }
+    }
+  }
+
+  return conflicts;
+}
+
+export interface FieldCompatibilityReport {
+  recordId: string;
+  missingFields: string[];
+  extraFields: string[];
+  typeMismatches: { field: string; expected: string; actual: string }[];
+  compatible: boolean;
+}
+
+export function checkFieldCompatibility(
+  importRecords: InspectionRecord[],
+  templates: Template[]
+): FieldCompatibilityReport[] {
+  const reports: FieldCompatibilityReport[] = [];
+
+  for (const record of importRecords) {
+    const template = templates.find(t => t.id === record.templateId);
+    if (!template) {
+      reports.push({
+        recordId: record.id,
+        missingFields: [],
+        extraFields: [],
+        typeMismatches: [],
+        compatible: false,
+      });
+      continue;
+    }
+
+    const templateKeys = new Set(template.fields.map(f => f.key));
+    const valueKeys = Object.keys(record.values || {});
+
+    const missingFields: string[] = [];
+    const extraFields: string[] = [];
+    const typeMismatches: { field: string; expected: string; actual: string }[] = [];
+
+    for (const field of template.fields) {
+      if (!(field.key in record.values) && field.required) {
+        missingFields.push(field.key);
+      }
+    }
+
+    for (const key of valueKeys) {
+      if (!templateKeys.has(key)) {
+        extraFields.push(key);
+      }
+    }
+
+    const compatible = missingFields.length === 0;
+
+    reports.push({
+      recordId: record.id,
+      missingFields,
+      extraFields,
+      typeMismatches,
+      compatible,
+    });
+  }
+
+  return reports;
+}
+
+export function applyFieldCompatibilityFix(
+  record: InspectionRecord,
+  template: Template
+): InspectionRecord {
+  const migratedValues: Record<string, any> = { ...record.values };
+
+  for (const field of template.fields) {
+    if (!(field.key in migratedValues)) {
+      switch (field.type) {
+        case 'text':
+        case 'textarea':
+        case 'select':
+          migratedValues[field.key] = '';
+          break;
+        case 'number':
+          migratedValues[field.key] = null;
+          break;
+        case 'photo':
+          migratedValues[field.key] = '';
+          break;
+        default:
+          migratedValues[field.key] = '';
+      }
+    }
+  }
+
+  return {
+    ...record,
+    values: migratedValues,
+    templateVersion: template.version,
+  };
 }
 
 export function parseCsvToRecords(csvText: string): any[] {

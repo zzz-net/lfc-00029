@@ -651,4 +651,260 @@ describe('useStore - 提交工作台：导入记录', () => {
     expect(result.successCount).toBe(1);
     expect(result.importedIds).toContain('rec_csv_new');
   });
+
+  it('importRecords 应返回 conflicts 冲突检测结果', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.addAuditLog).mockResolvedValue();
+
+    const data = [{
+      id: 'rec_conflict_test', deviceId: 'dev_123', templateId: 'tpl_123',
+      date: '2024-06-20', values: { temperature: '25' }, status: 'submitted',
+      submissionCount: 1,
+    }];
+
+    const result = await useStore.getState().importRecords(data, 'json');
+    expect(result.successCount).toBe(1);
+    expect(result.conflicts).toBeDefined();
+  });
+
+  it('importRecords 应返回 compatibilityReports 字段兼容性报告', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.addAuditLog).mockResolvedValue();
+
+    const data = [{
+      id: 'rec_compat_test', deviceId: 'dev_123', templateId: 'tpl_123',
+      date: '2024-06-20', values: {}, status: 'draft',
+    }];
+
+    const result = await useStore.getState().importRecords(data, 'json');
+    expect(result.successCount).toBe(1);
+    expect(result.compatibilityReports).toBeDefined();
+    expect(result.compatibilityReports.length).toBe(1);
+  });
+});
+
+describe('useStore - 提交工作台：CSV 导出导入闭环验证', () => {
+  const testRecord: InspectionRecord = {
+    id: 'rec_circular_test',
+    deviceId: 'dev_123',
+    templateId: 'tpl_123',
+    templateVersion: 1,
+    inspectorId: 'inspector_001',
+    inspectorName: '张三',
+    date: '2024-06-20',
+    values: { temperature: '25.5', pressure: '101.3', notes: '正常' },
+    photos: ['photo1.jpg', 'photo2.jpg'],
+    anomalyLevel: 'none' as AnomalyLevel,
+    status: 'submitted',
+    createdAt: '2024-06-20T08:00:00.000Z',
+    updatedAt: '2024-06-20T09:00:00.000Z',
+    submittedAt: '2024-06-20T09:00:00.000Z',
+    firstSubmittedAt: '2024-06-20T09:00:00.000Z',
+    submissionCount: 1,
+    withdrawCount: 0,
+    originDeviceId: 'dev_local_test',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useStore.setState({
+      templates: [mockTemplate],
+      devices: [mockDevice],
+      inspections: [testRecord],
+      conflicts: [],
+      logs: [],
+      syncQueue: [],
+      statusHistory: [
+        { id: 'h1', recordId: 'rec_circular_test', fromStatus: null as any, toStatus: 'draft', action: 'create_draft' as StatusChangeAction, actorId: 'u1', actorName: '张三', timestamp: '2024-06-20T08:00:00.000Z', deviceId: 'dev_123', date: '2024-06-20' },
+        { id: 'h2', recordId: 'rec_circular_test', fromStatus: 'draft', toStatus: 'submitted', action: 'submit' as StatusChangeAction, actorId: 'u1', actorName: '张三', timestamp: '2024-06-20T09:00:00.000Z', deviceId: 'dev_123', date: '2024-06-20' },
+      ],
+      submissionSnapshots: [
+        { id: 'snap_1', recordId: 'rec_circular_test', snapshotAt: '2024-06-20T09:00:00.000Z', values: testRecord.values, photos: testRecord.photos, anomalyLevel: 'none', templateVersion: 1 },
+      ],
+      submissionReceipts: [
+        { id: 'rcp_1', recordId: 'rec_circular_test', receiptNo: 'RCP-20240620-090000-AAAAAA', status: 'acknowledged', snapshotId: 'snap_1', recordValuesHash: 'hash123', operatorId: 'u1', operatorName: '张三', sourceDeviceId: 'dev_local_test', sourceDeviceInfo: 'Chrome/Windows', submittedAt: '2024-06-20T09:00:00.000Z' },
+      ],
+      auditLogs: [
+        { id: 'audit_1', recordId: 'rec_circular_test', action: 'submit', operatorId: 'u1', operatorName: '张三', timestamp: '2024-06-20T09:00:00.000Z', detail: '提交巡检记录', result: 'success' },
+      ],
+      sessionStates: [],
+      recordMetaList: [
+        { recordId: 'rec_circular_test', submissionCount: 1, withdrawCount: 0, hasConflict: false, exportCount: 0 },
+      ],
+      offlineMode: true,
+      currentDeviceId: 'dev_local_test',
+    } as any);
+  });
+
+  it('导出的扁平化数据应包含所有核心字段', async () => {
+    const exported = await useStore.getState().exportRecords({}, 'json');
+
+    expect(exported).toHaveLength(1);
+    const record = exported[0];
+    expect(record.id).toBe('rec_circular_test');
+    expect(record.deviceId).toBe('dev_123');
+    expect(record.templateId).toBe('tpl_123');
+    expect(record.status).toBe('submitted');
+    expect(record.submissionCount).toBe(1);
+    expect(record.values).toBeDefined();
+    expect(record.photos).toBeDefined();
+    expect(record.receiptNo).toBe('RCP-20240620-090000-AAAAAA');
+  });
+
+  it('导出的记录 ID 应在导入时被保留', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.putRecordMeta).mockResolvedValue();
+    vi.mocked(indexedDb.addStatusChangeEvent).mockResolvedValue();
+    vi.mocked(indexedDb.addSubmissionSnapshot).mockResolvedValue();
+    vi.mocked(indexedDb.putSubmissionReceipt).mockResolvedValue();
+    vi.mocked(indexedDb.addAuditLog).mockResolvedValue();
+
+    const exported = await useStore.getState().exportRecords({}, 'json');
+    expect(exported[0].id).toBe('rec_circular_test');
+
+    const newState = useStore.getState();
+    useStore.setState({ inspections: [] });
+
+    const importResult = await useStore.getState().importRecords(exported, 'json');
+
+    expect(importResult.successCount).toBe(1);
+    expect(importResult.importedIds).toContain('rec_circular_test');
+
+    const importedRecord = useStore.getState().inspections.find(r => r.id === 'rec_circular_test');
+    expect(importedRecord).toBeDefined();
+    expect(importedRecord?.deviceId).toBe('dev_123');
+    expect(importedRecord?.status).toBe('submitted');
+    expect(importedRecord?.submissionCount).toBe(1);
+
+    useStore.setState(newState as any);
+  });
+
+  it('导入时应检测 ID 重复冲突', async () => {
+    const exported = await useStore.getState().exportRecords({}, 'json');
+
+    const importResult = await useStore.getState().importRecords(exported, 'json');
+
+    expect(importResult.successCount).toBe(0);
+    expect(importResult.skippedCount).toBe(1);
+  });
+
+  it('完整数据导出应包含状态历史、快照、凭据、审计日志', async () => {
+    const fullData = await useStore.getState().exportRecords({}, 'json', { fullData: true });
+
+    expect(fullData).toHaveLength(1);
+    const item = fullData[0];
+    expect(item.record).toBeDefined();
+    expect(item.statusHistory).toBeDefined();
+    expect(item.snapshots).toBeDefined();
+    expect(item.receipts).toBeDefined();
+    expect(item.auditLogs).toBeDefined();
+    expect(item.meta).toBeDefined();
+
+    expect(item.record.id).toBe('rec_circular_test');
+    expect(item.statusHistory.length).toBeGreaterThan(0);
+    expect(item.snapshots.length).toBeGreaterThan(0);
+    expect(item.receipts.length).toBeGreaterThan(0);
+    expect(item.auditLogs.length).toBeGreaterThan(0);
+  });
+
+  it('完整数据导入应回灌所有关联数据', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.putRecordMeta).mockResolvedValue();
+    vi.mocked(indexedDb.addStatusChangeEvent).mockResolvedValue();
+    vi.mocked(indexedDb.addSubmissionSnapshot).mockResolvedValue();
+    vi.mocked(indexedDb.putSubmissionReceipt).mockResolvedValue();
+    vi.mocked(indexedDb.addAuditLog).mockResolvedValue();
+
+    const fullData = await useStore.getState().exportRecords({}, 'json', { fullData: true });
+
+    const newState = useStore.getState();
+    useStore.setState({
+      inspections: [],
+      statusHistory: [],
+      submissionSnapshots: [],
+      submissionReceipts: [],
+      auditLogs: [],
+      recordMetaList: [],
+    });
+
+    const importResult = await useStore.getState().importRecords(fullData, 'json');
+
+    expect(importResult.successCount).toBe(1);
+    expect(useStore.getState().statusHistory.length).toBeGreaterThan(0);
+    expect(useStore.getState().submissionSnapshots.length).toBeGreaterThan(0);
+    expect(useStore.getState().submissionReceipts.length).toBeGreaterThan(0);
+    expect(useStore.getState().auditLogs.length).toBeGreaterThan(0);
+
+    useStore.setState(newState as any);
+  });
+
+  it('冲突检测应识别同设备同日记录', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.putRecordMeta).mockResolvedValue();
+    vi.mocked(indexedDb.addStatusChangeEvent).mockResolvedValue();
+    vi.mocked(indexedDb.addSubmissionSnapshot).mockResolvedValue();
+    vi.mocked(indexedDb.putSubmissionReceipt).mockResolvedValue();
+    vi.mocked(indexedDb.addAuditLog).mockResolvedValue();
+
+    const newRecord = {
+      id: 'rec_duplicate_test',
+      deviceId: 'dev_123',
+      templateId: 'tpl_123',
+      date: '2024-06-20',
+      values: { temperature: '25.5' },
+      status: 'submitted',
+      submissionCount: 1,
+    };
+
+    const importResult = await useStore.getState().importRecords([newRecord], 'json');
+
+    expect(importResult.successCount).toBe(1);
+    expect(importResult.conflicts).toBeDefined();
+    expect(importResult.conflicts.length).toBeGreaterThan(0);
+  });
+
+  it('字段兼容性报告应正确识别缺失字段', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.putRecordMeta).mockResolvedValue();
+
+    const recordWithMissingFields = {
+      id: 'rec_missing_fields',
+      deviceId: 'dev_123',
+      templateId: 'tpl_123',
+      date: '2024-06-20',
+      values: {},
+      status: 'draft',
+    };
+
+    const importResult = await useStore.getState().importRecords([recordWithMissingFields], 'json');
+
+    expect(importResult.successCount).toBe(1);
+    expect(importResult.compatibilityReports).toBeDefined();
+    expect(importResult.compatibilityReports.length).toBe(1);
+    expect(importResult.compatibilityReports[0].missingFields.length).toBeGreaterThan(0);
+  });
+
+  it('导出的 CSV 格式数据应能被正确解析和导入', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.putRecordMeta).mockResolvedValue();
+    vi.mocked(indexedDb.addAuditLog).mockResolvedValue();
+
+    const exported = await useStore.getState().exportRecords({}, 'csv');
+
+    const headers = Object.keys(exported[0]);
+    const values = Object.values(exported[0]).map(v =>
+      typeof v === 'string' ? `"${v.replace(/"/g, '""')}"` : String(v)
+    );
+    const csvText = [headers.join(','), values.join(',')].join('\n');
+
+    const newState = useStore.getState();
+    useStore.setState({ inspections: [] });
+
+    const importResult = await useStore.getState().importRecords([csvText], 'csv');
+
+    expect(importResult.successCount).toBe(1);
+    expect(importResult.importedIds).toContain('rec_circular_test');
+
+    useStore.setState(newState as any);
+  });
 });
