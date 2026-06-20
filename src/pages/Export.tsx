@@ -6,6 +6,7 @@ import Empty from '@/components/Empty';
 import { useStore } from '@/store/useStore';
 import { getAnomalyLevelColor, getAnomalyLevelLabel } from '@/utils/anomaly';
 import { getTodayString } from '@/utils/id';
+import { appConfig } from '@/config/appConfig';
 
 export default function Export() {
   const { inspections, devices, templates, offlineMode } = useStore();
@@ -59,7 +60,7 @@ export default function Export() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `巡检记录_${getTodayString()}.json`;
+      a.download = `${appConfig.export.fileNamePrefix}${getTodayString()}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -92,7 +93,7 @@ export default function Export() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `巡检记录_${getTodayString()}.csv`;
+      a.download = `${appConfig.export.fileNamePrefix}${getTodayString()}.csv`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -106,7 +107,7 @@ export default function Export() {
 
   return (
     <div className="min-h-screen bg-surface-100 pb-20">
-      <TopBar title="导出记录" />
+      <TopBar title={appConfig.pages.export.title} />
 
       <div className="p-4 space-y-4 max-w-md mx-auto">
         <div className="bg-white rounded-2xl shadow-card p-4">
@@ -234,7 +235,7 @@ export default function Export() {
           </div>
 
           {filteredInspections.length === 0 ? (
-            <Empty text="暂无记录" icon={FileSpreadsheet} />
+            <Empty type="export" icon={FileSpreadsheet} />
           ) : (
             <div className="divide-y divide-surface-100 max-h-96 overflow-y-auto">
               {filteredInspections.map((record) => (

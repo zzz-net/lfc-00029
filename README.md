@@ -1,57 +1,206 @@
-# React + TypeScript + Vite
+# 离线巡检工具
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+面向现场巡检人员的离线巡检记录与同步工具。支持离线巡检、本地缓存、一键同步、数据导出的移动端巡检工具。
 
-Currently, two official plugins are available:
+## 功能特性
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **离线巡检**：在弱网环境下可正常填写巡检记录，所有数据自动保存在本地
+- **自动草稿**：输入内容 3 秒后自动保存草稿，刷新或关闭页面后可继续编辑
+- **一键同步**：恢复网络后进入同步中心一键上传，冲突智能处理
+- **数据导出**：支持 JSON、CSV 格式导出，满足不同场景需求
+- **操作日志**：完整记录所有操作，便于追溯和审计
+- **模板配置**：支持自定义巡检模板，灵活适配不同巡检场景
 
-## Expanding the ESLint configuration
+## 技术栈
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- 前端：React 18 + TypeScript + Vite
+- 状态管理：Zustand
+- 本地存储：IndexedDB (idb)
+- UI 框架：Tailwind CSS
+- 图标：Lucide React
+- 后端：Express + Node.js
+- 测试：Vitest + Testing Library
 
-```js
-export default tseslint.config({
-  extends: [
-    // Remove ...tseslint.configs.recommended and replace with this
-    ...tseslint.configs.recommendedTypeChecked,
-    // Alternatively, use this for stricter rules
-    ...tseslint.configs.strictTypeChecked,
-    // Optionally, add this for stylistic rules
-    ...tseslint.configs.stylisticTypeChecked,
-  ],
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
+## 快速开始
+
+### 环境要求
+
+- Node.js >= 18.x
+- npm >= 9.x
+
+### 安装依赖
+
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### 开发模式
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+同时启动前端开发服务器和后端 API 服务：
 
-export default tseslint.config({
-  extends: [
-    // other configs...
-    // Enable lint rules for React
-    reactX.configs['recommended-typescript'],
-    // Enable lint rules for React DOM
-    reactDom.configs.recommended,
-  ],
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
+```bash
+npm run dev
 ```
+
+- 前端地址：http://localhost:5173
+- 后端地址：http://localhost:3001
+
+### 仅启动前端
+
+```bash
+npm run client:dev
+```
+
+### 仅启动后端
+
+```bash
+npm run server:dev
+```
+
+### 构建生产版本
+
+```bash
+npm run build
+```
+
+### 预览生产版本
+
+```bash
+npm run preview
+```
+
+## 使用说明
+
+### 首次使用
+
+1. 启动应用后，首页会展示产品介绍和核心功能入口
+2. 系统会自动初始化示例设备数据，便于快速体验
+3. 点击「开始巡检」或进入「今日巡检」页面开始使用
+
+### 巡检流程
+
+1. **选择设备**：在巡检列表中选择要巡检的设备
+2. **填写记录**：根据巡检模板填写各项检查内容，支持上传照片
+3. **自动保存**：输入内容 3 秒后自动保存为草稿
+4. **提交巡检**：填写完成后点击「提交巡检」按钮
+5. **查看状态**：提交后可在列表中查看记录状态
+
+### 同步流程
+
+1. **离线模式**：网络不佳时可开启离线模式，数据保存在本地
+2. **查看待同步**：进入「同步中心」查看所有待同步的记录
+3. **一键同步**：点击「立即同步」按钮批量上传本地数据
+4. **处理冲突**：如遇冲突，可选择保留本地、采用远端或合并版本
+
+### 导出流程
+
+1. **进入导出页面**：点击首页「导出记录」或底部导航进入
+2. **筛选条件**：按日期、设备筛选需要导出的记录
+3. **选择格式**：支持 JSON（完整数据）和 CSV（Excel 兼容）两种格式
+4. **下载文件**：点击对应格式按钮即可下载导出文件
+
+### 日志查看
+
+1. **进入日志页面**：点击首页「操作日志」进入
+2. **筛选日志**：可按操作结果（成功/失败/冲突）筛选
+3. **查看详情**：每条日志包含操作人、时间、详细描述等信息
+
+### 状态说明
+
+| 状态 | 说明 |
+|------|------|
+| 待巡检 | 该设备今日尚未开始巡检 |
+| 草稿 | 巡检记录已保存但未提交，可继续编辑 |
+| 待同步 | 巡检记录已提交，等待网络恢复后同步 |
+| 已同步 | 巡检记录已成功同步到服务器 |
+| 冲突 | 本地与远端数据存在差异，需人工处理 |
+
+### 数据持久化
+
+- 所有数据默认保存在浏览器的 IndexedDB 中
+- 刷新页面、关闭浏览器后重新打开，数据不会丢失
+- 草稿和待同步记录会在首页显示恢复提示
+- 操作日志最多保留 500 条
+
+## 项目结构
+
+```
+lfc-00029/
+├── api/                    # 后端 API 服务
+│   ├── data/              # 数据存储
+│   ├── routes/            # API 路由
+│   ├── store/             # 数据存储逻辑
+│   └── ...
+├── public/                # 静态资源
+├── src/                   # 前端源码
+│   ├── api/               # API 客户端
+│   ├── components/        # 通用组件
+│   ├── config/            # 应用配置
+│   ├── db/                # IndexedDB 封装
+│   ├── hooks/             # 自定义 Hooks
+│   ├── lib/               # 工具库
+│   ├── pages/             # 页面组件
+│   ├── store/             # 状态管理
+│   ├── test/              # 测试配置
+│   ├── types/             # TypeScript 类型定义
+│   ├── utils/             # 工具函数
+│   └── ...
+├── index.html
+├── package.json
+├── vite.config.ts
+└── vitest.config.ts
+```
+
+## 开发命令
+
+| 命令 | 说明 |
+|------|------|
+| `npm run dev` | 启动前后端开发服务 |
+| `npm run client:dev` | 仅启动前端开发服务 |
+| `npm run server:dev` | 仅启动后端开发服务 |
+| `npm run build` | 构建生产版本 |
+| `npm run preview` | 预览生产构建 |
+| `npm run test` | 运行测试 |
+| `npm run test:watch` | 监听模式运行测试 |
+| `npm run lint` | 代码检查 |
+| `npm run check` | TypeScript 类型检查 |
+
+## 测试
+
+运行所有测试：
+
+```bash
+npm run test
+```
+
+监听模式运行测试：
+
+```bash
+npm run test:watch
+```
+
+## 配置说明
+
+产品名称、描述、页面标题等文案统一在 `src/config/appConfig.ts` 中管理，避免分散在各页面中。如需修改产品名称或文案，只需修改该配置文件即可。
+
+## 常见问题
+
+**Q: 数据会丢失吗？**
+
+A: 所有数据保存在浏览器的 IndexedDB 中，刷新页面或关闭浏览器后重新打开，数据不会丢失。但清除浏览器数据会导致本地数据丢失，建议定期同步或导出备份。
+
+**Q: 离线模式如何开启？**
+
+A: 点击顶部导航栏右侧的「在线/离线」按钮即可切换模式。离线模式下所有数据保存在本地，恢复网络后可一键同步。
+
+**Q: 如何导出数据？**
+
+A: 进入「导出记录」页面，选择筛选条件后，点击「导出 JSON」或「导出 CSV」按钮即可下载文件。
+
+**Q: 同步冲突怎么处理？**
+
+A: 进入「同步中心」，点击冲突记录查看详情，可选择保留本地版本、采用远端版本或合并版本（保留非空值）。
+
+## License
+
+MIT

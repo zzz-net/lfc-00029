@@ -5,6 +5,7 @@ import BottomNav from '@/components/BottomNav';
 import Empty from '@/components/Empty';
 import { useStore } from '@/store/useStore';
 import { getAnomalyLevelColor, getAnomalyLevelLabel } from '@/utils/anomaly';
+import { appConfig } from '@/config/appConfig';
 import type { ConflictRecord, InspectionRecord } from '@/types';
 
 export default function Sync() {
@@ -199,7 +200,7 @@ export default function Sync() {
 
   return (
     <div className="min-h-screen bg-surface-100 pb-20">
-      <TopBar title="同步中心" />
+      <TopBar title={appConfig.pages.sync.title} />
 
       <div className="p-4 space-y-4 max-w-md mx-auto">
         <div className="grid grid-cols-3 gap-2">
@@ -244,7 +245,7 @@ export default function Sync() {
           </div>
 
           {pendingRecords.length === 0 ? (
-            <Empty text="暂无待同步记录" icon={CheckCircle} />
+            <Empty type="sync" icon={CheckCircle} />
           ) : (
             <div className="divide-y divide-surface-100">
               {pendingRecords.map((record) => (

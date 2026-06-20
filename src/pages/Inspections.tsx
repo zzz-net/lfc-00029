@@ -6,12 +6,13 @@ import BottomNav from '@/components/BottomNav';
 import { useStore } from '@/store/useStore';
 import { getTodayString } from '@/utils/id';
 import { getAnomalyLevelColor, getAnomalyLevelLabel } from '@/utils/anomaly';
+import { appConfig } from '@/config/appConfig';
 
 const statusConfig = {
-  draft: { label: '草稿', color: 'bg-warning-100 text-warning-600' },
-  submitted: { label: '待同步', color: 'bg-accent-100 text-accent-600' },
-  synced: { label: '已同步', color: 'bg-success-100 text-success-600' },
-  conflict: { label: '冲突', color: 'bg-critical-500/20 text-critical-500' },
+  draft: { label: appConfig.status.draft, color: 'bg-warning-100 text-warning-600' },
+  submitted: { label: appConfig.status.submitted, color: 'bg-accent-100 text-accent-600' },
+  synced: { label: appConfig.status.synced, color: 'bg-success-100 text-success-600' },
+  conflict: { label: appConfig.status.conflict, color: 'bg-critical-500/20 text-critical-500' },
 };
 
 export default function Inspections() {
@@ -63,7 +64,7 @@ export default function Inspections() {
 
   return (
     <div className="min-h-screen bg-surface-100 pb-20">
-      <TopBar title="今日巡检" />
+      <TopBar title={appConfig.pages.inspections.title} />
 
       <div className="p-4 space-y-3 max-w-md mx-auto">
         <div className="flex gap-2">

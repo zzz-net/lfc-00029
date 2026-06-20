@@ -1,12 +1,17 @@
 import { Wifi, WifiOff, User, ChevronDown } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '@/store/useStore';
+import { appConfig } from '@/config/appConfig';
 import type { UserRole } from '@/types';
 
 export default function TopBar({ title }: { title: string }) {
   const { role, offlineMode, networkStatus, currentUserName, setRole, setOfflineMode } = useStore();
   const [showRoleMenu, setShowRoleMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    document.title = `${title} - ${appConfig.productName}`;
+  }, [title]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -29,7 +34,7 @@ export default function TopBar({ title }: { title: string }) {
     <div className="sticky top-0 z-40 bg-white border-b border-surface-200">
       {offlineMode && (
         <div className="bg-danger-500 text-white text-xs text-center py-1.5 font-medium">
-          离线模式 - 数据将在恢复网络后同步
+          {appConfig.offline.enabledText}
         </div>
       )}
       <div className="flex items-center justify-between px-4 h-14">

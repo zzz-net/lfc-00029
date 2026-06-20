@@ -4,6 +4,7 @@ import TopBar from '@/components/TopBar';
 import BottomNav from '@/components/BottomNav';
 import Empty from '@/components/Empty';
 import { useStore } from '@/store/useStore';
+import { appConfig } from '@/config/appConfig';
 import type { OperationLog } from '@/types';
 
 export default function Logs() {
@@ -79,7 +80,7 @@ export default function Logs() {
 
   return (
     <div className="min-h-screen bg-surface-100 pb-20">
-      <TopBar title="操作日志" />
+      <TopBar title={appConfig.pages.logs.title} />
 
       <div className="p-4 space-y-4 max-w-md mx-auto">
         <div className="bg-white rounded-2xl shadow-card p-4">
@@ -136,7 +137,7 @@ export default function Logs() {
           </div>
 
           {filteredLogs.length === 0 ? (
-            <Empty text="暂无操作日志" icon={Clock} />
+            <Empty type="logs" icon={Clock} />
           ) : (
             <div className="divide-y divide-surface-100 max-h-[60vh] overflow-y-auto">
               {filteredLogs.map((log) => (
@@ -173,7 +174,7 @@ export default function Logs() {
         <div className="bg-primary-50 rounded-xl p-3">
           <div className="text-xs text-primary-600">
             <span className="font-medium">提示：</span>
-            所有操作均会被记录，包括模板配置、巡检提交、同步操作等。日志保存在本地，最多保留 500 条。
+            {appConfig.logs.notice}
           </div>
         </div>
       </div>

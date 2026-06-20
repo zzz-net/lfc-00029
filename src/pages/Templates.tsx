@@ -5,6 +5,7 @@ import TopBar from '@/components/TopBar';
 import BottomNav from '@/components/BottomNav';
 import { useStore } from '@/store/useStore';
 import { formatDateTime } from '@/utils/id';
+import { appConfig } from '@/config/appConfig';
 
 export default function Templates() {
   const navigate = useNavigate();
@@ -34,7 +35,7 @@ export default function Templates() {
 
   return (
     <div className="min-h-screen bg-surface-100 pb-20">
-      <TopBar title="模板配置" />
+      <TopBar title={appConfig.pages.templates.title} />
 
       <div className="p-4 space-y-3 max-w-md mx-auto">
         <button

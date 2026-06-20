@@ -13,11 +13,13 @@ import {
   RefreshCw,
   FilePlus,
   ChevronRight,
+  CheckCircle,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { getTodayString, generateId } from '@/utils/id';
 import { validateRecord } from '@/utils/validation';
 import { getAnomalyLevelColor, getAnomalyLevelLabel, calculateAnomalyLevel } from '@/utils/anomaly';
+import { appConfig } from '@/config/appConfig';
 import type { PhotoPlaceholder, TemplateField, InspectionRecord } from '@/types';
 
 export default function InspectionForm() {
@@ -49,6 +51,9 @@ export default function InspectionForm() {
   const [templateVersionMismatch, setTemplateVersionMismatch] = useState(false);
   const [showVersionDialog, setShowVersionDialog] = useState(false);
   const [mismatchDraft, setMismatchDraft] = useState<InspectionRecord | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (existingDrafts.length > 0 && !selectedDraftId) {
@@ -75,6 +80,7 @@ export default function InspectionForm() {
 
   const handleValueChange = (key: string, value: any) => {
     setValues((prev) => ({ ...prev, [key]: value }));
+    setHasUnsavedChanges(true);
     if (errors[key]) {
       setErrors((prev) => {
         const next = { ...prev };
@@ -82,13 +88,47 @@ export default function InspectionForm() {
         return next;
       });
     }
+
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      handleAutoSave();
+    }, 3000);
+  };
+
+  const handleAutoSave = async () => {
+    if (!template || !deviceId) return;
+    if (Object.keys(values).length === 0 && photos.length === 0) return;
+
+    try {
+      const record = await saveInspectionDraft({
+        id: selectedDraftId || undefined,
+        deviceId,
+        templateId: template.id,
+        templateVersion: template.version,
+        date: today,
+        values,
+        photos,
+      });
+
+      if (!selectedDraftId) {
+        setSelectedDraftId(record.id);
+      }
+      setLastSavedAt(new Date());
+      setHasUnsavedChanges(false);
+    } catch (e) {
+      console.error('Auto save failed:', e);
+    }
   };
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
 
-    const newPhotos: PhotoPlaceholder[] = [];
+    setHasUnsavedChanges(true);
+    let loadedCount = 0;
+    const totalFiles = files.length;
 
     Array.from(files).forEach((file) => {
       const id = generateId('photo');
@@ -104,6 +144,15 @@ export default function InspectionForm() {
           createdAt: new Date().toISOString(),
         };
         setPhotos((prev) => [...prev, photo]);
+        loadedCount++;
+        if (loadedCount === totalFiles) {
+          if (autoSaveTimerRef.current) {
+            clearTimeout(autoSaveTimerRef.current);
+          }
+          autoSaveTimerRef.current = setTimeout(() => {
+            handleAutoSave();
+          }, 2000);
+        }
       };
 
       reader.readAsDataURL(file);
@@ -116,6 +165,13 @@ export default function InspectionForm() {
 
   const removePhoto = (photoId: string) => {
     setPhotos((prev) => prev.filter((p) => p.id !== photoId));
+    setHasUnsavedChanges(true);
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      handleAutoSave();
+    }, 2000);
   };
 
   const validateForm = (): boolean => {
@@ -158,6 +214,8 @@ export default function InspectionForm() {
         setSelectedDraftId(record.id);
       }
 
+      setLastSavedAt(new Date());
+      setHasUnsavedChanges(false);
       setShowSaveSuccess(true);
       setTimeout(() => setShowSaveSuccess(false), 2000);
     } finally {
@@ -169,10 +227,11 @@ export default function InspectionForm() {
     if (!template || !deviceId) return;
     setShowOverwriteConfirm(false);
 
+    let record;
     if (overwrite && existingDrafts.length > 0) {
       const latestDraft = existingDrafts[0];
       setSelectedDraftId(latestDraft.id);
-      const record = await saveInspectionDraft({
+      record = await saveInspectionDraft({
         id: latestDraft.id,
         deviceId,
         templateId: template.id,
@@ -183,7 +242,7 @@ export default function InspectionForm() {
       });
       setSelectedDraftId(record.id);
     } else {
-      const record = await saveInspectionDraft({
+      record = await saveInspectionDraft({
         deviceId,
         templateId: template.id,
         templateVersion: template.version,
@@ -194,6 +253,8 @@ export default function InspectionForm() {
       setSelectedDraftId(record.id);
     }
 
+    setLastSavedAt(new Date());
+    setHasUnsavedChanges(false);
     setShowSaveSuccess(true);
     setTimeout(() => setShowSaveSuccess(false), 2000);
   };
@@ -289,6 +350,15 @@ export default function InspectionForm() {
   };
 
   const anomalyLevel = template ? calculateAnomalyLevel(values, template.fields) : 'none';
+
+  useEffect(() => {
+    if (device) {
+      document.title = `${device.name} - ${appConfig.productName}`;
+    }
+    return () => {
+      document.title = appConfig.productName;
+    };
+  }, [device]);
 
   if (!device || !template) {
     return (
@@ -561,24 +631,57 @@ export default function InspectionForm() {
         />
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-surface-200 p-4 safe-bottom z-40">
-        <div className="max-w-md mx-auto flex gap-3">
-          <button
-            onClick={handleSaveDraft}
-            disabled={saving}
-            className="flex-1 py-3 bg-surface-100 text-primary-700 rounded-xl font-medium hover:bg-surface-200 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
-          >
-            <Clock size={18} />
-            保存草稿
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={submitting}
-            className="flex-1 py-3 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
-          >
-            <Send size={18} />
-            {submitting ? '提交中...' : '提交巡检'}
-          </button>
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-surface-200 z-40">
+        {(selectedDraftId || lastSavedAt || hasUnsavedChanges) && (
+          <div className="border-b border-surface-100 px-4 py-2">
+            <div className="max-w-md mx-auto flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {hasUnsavedChanges ? (
+                  <>
+                    <Clock size={14} className="text-warning-500" />
+                    <span className="text-xs text-warning-600">正在编辑，3秒后自动保存</span>
+                  </>
+                ) : lastSavedAt ? (
+                  <>
+                    <CheckCircle size={14} className="text-success-500" />
+                    <span className="text-xs text-success-600">
+                      已保存 · {lastSavedAt.toLocaleTimeString()}
+                    </span>
+                  </>
+                ) : selectedDraftId ? (
+                  <>
+                    <FileText size={14} className="text-primary-400" />
+                    <span className="text-xs text-primary-500">草稿已加载</span>
+                  </>
+                ) : null}
+              </div>
+              {selectedDraftId && (
+                <span className="text-[10px] px-2 py-0.5 bg-warning-100 text-warning-600 rounded-full">
+                  草稿
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+        <div className="p-4 safe-bottom">
+          <div className="max-w-md mx-auto flex gap-3">
+            <button
+              onClick={handleSaveDraft}
+              disabled={saving}
+              className="flex-1 py-3 bg-surface-100 text-primary-700 rounded-xl font-medium hover:bg-surface-200 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+            >
+              <Save size={18} />
+              保存草稿
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="flex-1 py-3 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
+            >
+              <Send size={18} />
+              {submitting ? '提交中...' : '提交巡检'}
+            </button>
+          </div>
         </div>
       </div>
 

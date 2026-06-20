@@ -3,6 +3,7 @@ import { Search, MapPin, Tag, Cpu, Plus } from 'lucide-react';
 import TopBar from '@/components/TopBar';
 import BottomNav from '@/components/BottomNav';
 import { useStore } from '@/store/useStore';
+import { appConfig } from '@/config/appConfig';
 
 const statusConfig = {
   normal: { label: '正常', color: 'bg-success-100 text-success-600' },
@@ -28,7 +29,7 @@ export default function Devices() {
 
   return (
     <div className="min-h-screen bg-surface-100 pb-20">
-      <TopBar title="设备管理" />
+      <TopBar title={appConfig.pages.devices.title} />
 
       <div className="p-4 space-y-3 max-w-md mx-auto">
         <div className="relative">
