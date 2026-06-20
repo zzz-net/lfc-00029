@@ -1,19 +1,21 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Clock, FileCheck, AlertTriangle, ChevronRight, Filter } from 'lucide-react';
+import { Search, Clock, FileCheck, AlertTriangle, ChevronRight, Filter, FileEdit, Send, CheckCircle } from 'lucide-react';
 import TopBar from '@/components/TopBar';
 import BottomNav from '@/components/BottomNav';
 import { useStore } from '@/store/useStore';
 import { getTodayString } from '@/utils/id';
 import { getAnomalyLevelColor, getAnomalyLevelLabel } from '@/utils/anomaly';
-import { appConfig } from '@/config/appConfig';
+import { appConfig, statusConfig } from '@/config/appConfig';
 
-const statusConfig = {
-  draft: { label: appConfig.status.draft, color: 'bg-warning-100 text-warning-600' },
-  submitted: { label: appConfig.status.submitted, color: 'bg-accent-100 text-accent-600' },
-  synced: { label: appConfig.status.synced, color: 'bg-success-100 text-success-600' },
-  conflict: { label: appConfig.status.conflict, color: 'bg-critical-500/20 text-critical-500' },
-};
+const statusList = [
+  { value: '', label: '全部' },
+  { value: 'pending', label: '待巡检' },
+  { value: 'draft', label: statusConfig.draft.shortLabel },
+  { value: 'submitted', label: statusConfig.submitted.shortLabel },
+  { value: 'synced', label: statusConfig.synced.shortLabel },
+  { value: 'conflict', label: statusConfig.conflict.shortLabel },
+];
 
 export default function Inspections() {
   const navigate = useNavigate();
@@ -62,6 +64,16 @@ export default function Inspections() {
     navigate(`/inspections/${deviceId}`);
   };
 
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'draft': return FileEdit;
+      case 'submitted': return Send;
+      case 'synced': return CheckCircle;
+      case 'conflict': return AlertTriangle;
+      default: return Clock;
+    }
+  };
+
   return (
     <div className="min-h-screen bg-surface-100 pb-20">
       <TopBar title={appConfig.pages.inspections.title} />
@@ -94,14 +106,7 @@ export default function Inspections() {
           <div className="bg-white rounded-2xl shadow-card p-4 space-y-3">
             <h3 className="text-sm font-medium text-primary-800">状态筛选</h3>
             <div className="flex flex-wrap gap-2">
-              {[
-                { value: '', label: '全部' },
-                { value: 'pending', label: '待巡检' },
-                { value: 'draft', label: '草稿' },
-                { value: 'submitted', label: '待同步' },
-                { value: 'synced', label: '已同步' },
-                { value: 'conflict', label: '冲突' },
-              ].map((item) => (
+              {statusList.map((item) => (
                 <button
                   key={item.value}
                   onClick={() => setStatusFilter(item.value)}
@@ -163,10 +168,11 @@ export default function Inspections() {
               .map(({ device, records, status }) => {
                 const statusInfo = status === 'pending'
                   ? { label: '待巡检', color: 'bg-surface-100 text-surface-300' }
-                  : statusConfig[status];
+                  : { label: statusConfig[status as keyof typeof statusConfig]?.shortLabel || status, color: `${statusConfig[status as keyof typeof statusConfig]?.bgColor || ''} ${statusConfig[status as keyof typeof statusConfig]?.textColor || ''}` };
 
                 const latestRecord = records[0];
                 const anomalyLevel = latestRecord?.anomalyLevel || 'none';
+                const StatusIcon = getStatusIcon(status);
 
                 return (
                   <button
@@ -178,7 +184,7 @@ export default function Inspections() {
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           <h3 className="font-bold text-primary-800">{device.name}</h3>
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${statusInfo.color}`}>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${statusInfo.color}`} title={status !== 'pending' ? statusConfig[status as keyof typeof statusConfig]?.description : undefined}>
                             {statusInfo.label}
                           </span>
                         </div>

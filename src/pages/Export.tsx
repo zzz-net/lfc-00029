@@ -6,10 +6,11 @@ import Empty from '@/components/Empty';
 import { useStore } from '@/store/useStore';
 import { getAnomalyLevelColor, getAnomalyLevelLabel } from '@/utils/anomaly';
 import { getTodayString } from '@/utils/id';
-import { appConfig } from '@/config/appConfig';
+import { appConfig, statusConfig, exportFields } from '@/config/appConfig';
+import type { InspectionRecord } from '@/types';
 
 export default function Export() {
-  const { inspections, devices, templates, offlineMode } = useStore();
+  const { inspections, devices, templates, offlineMode, markRecordExported, getStatusHistory } = useStore();
   const [selectedDate, setSelectedDate] = useState('');
   const [selectedDevice, setSelectedDevice] = useState('');
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -27,42 +28,71 @@ export default function Export() {
     return device ? `${device.code} ${device.name}` : deviceId;
   };
 
+  const getDeviceCode = (deviceId: string) => {
+    const device = devices.find((d) => d.id === deviceId);
+    return device?.code || deviceId;
+  };
+
+  const getDeviceLocation = (deviceId: string) => {
+    const device = devices.find((d) => d.id === deviceId);
+    return device?.location || '';
+  };
+
   const getTemplateName = (templateId: string) => {
     const tpl = templates.find((t) => t.id === templateId);
     return tpl?.name || '未知模板';
   };
 
   const getStatusLabel = (status: string) => {
-    const map: Record<string, string> = {
-      draft: '草稿',
-      submitted: '已提交',
-      synced: '已同步',
-      conflict: '冲突',
-    };
-    return map[status] || status;
+    return statusConfig[status as keyof typeof statusConfig]?.label || status;
   };
 
   const getStatusColor = (status: string) => {
-    const map: Record<string, string> = {
-      draft: 'bg-warning-100 text-warning-600',
-      submitted: 'bg-accent-100 text-accent-600',
-      synced: 'bg-success-100 text-success-600',
-      conflict: 'bg-danger-100 text-danger-600',
-    };
-    return map[status] || 'bg-surface-100 text-primary-500';
+    const meta = statusConfig[status as keyof typeof statusConfig];
+    return meta ? `${meta.bgColor} ${meta.textColor}` : 'bg-surface-100 text-primary-500';
   };
 
-  const exportJSON = () => {
+  const buildExportRow = (record: InspectionRecord): Record<string, any> => {
+    const device = devices.find((d) => d.id === record.deviceId);
+    const tpl = templates.find((t) => t.id === record.templateId);
+    const history = getStatusHistory(record.id);
+    const lastChange = history[0];
+
+    return {
+      recordId: record.id,
+      deviceCode: device?.code || '',
+      deviceName: device?.name || '',
+      deviceLocation: device?.location || '',
+      date: record.date,
+      templateName: tpl?.name || '',
+      templateVersion: record.templateVersion,
+      inspectorName: record.inspectorName,
+      statusLabel: getStatusLabel(record.status),
+      anomalyLabel: getAnomalyLevelLabel(record.anomalyLevel),
+      values: record.values,
+      photoCount: record.photos.length,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      submittedAt: record.submittedAt || '',
+      syncedAt: record.syncedAt || '',
+      lastStatusChange: lastChange ? `${lastChange.action} @ ${lastChange.timestamp}` : '',
+    };
+  };
+
+  const exportJSON = async () => {
     setExporting(true);
     try {
-      const data = JSON.stringify(filteredInspections, null, 2);
-      const blob = new Blob([data], { type: 'application/json' });
+      const data = filteredInspections.map(buildExportRow);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `${appConfig.export.fileNamePrefix}${getTodayString()}.json`;
       a.click();
       URL.revokeObjectURL(url);
+      for (const r of filteredInspections) {
+        await markRecordExported(r.id);
+      }
     } catch (e) {
       alert('导出失败：' + (e as Error).message);
     } finally {
@@ -70,19 +100,22 @@ export default function Export() {
     }
   };
 
-  const exportCSV = () => {
+  const exportCSV = async () => {
     setExporting(true);
     try {
-      const headers = ['设备', '日期', '模板', '巡检员', '状态', '异常等级', '提交时间'];
-      const rows = filteredInspections.map((r) => [
-        getDeviceName(r.deviceId),
-        r.date,
-        getTemplateName(r.templateId),
-        r.inspectorName,
-        getStatusLabel(r.status),
-        getAnomalyLevelLabel(r.anomalyLevel),
-        new Date(r.createdAt).toLocaleString(),
-      ]);
+      const csvFields = exportFields.filter((f) => !f.csvOnly);
+      const headers = csvFields.map((f) => f.label);
+      const rows = filteredInspections.map((record) => {
+        const row = buildExportRow(record);
+        return csvFields.map((f) => {
+          let val = row[f.key];
+          if (f.key === 'values') val = JSON.stringify(val);
+          if (f.key === 'createdAt' || f.key === 'updatedAt' || f.key === 'submittedAt' || f.key === 'syncedAt') {
+            val = val ? new Date(val).toLocaleString() : '';
+          }
+          return val !== undefined && val !== null ? String(val) : '';
+        });
+      });
 
       const csvContent = [headers, ...rows]
         .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
@@ -96,6 +129,9 @@ export default function Export() {
       a.download = `${appConfig.export.fileNamePrefix}${getTodayString()}.csv`;
       a.click();
       URL.revokeObjectURL(url);
+      for (const r of filteredInspections) {
+        await markRecordExported(r.id);
+      }
     } catch (e) {
       alert('导出失败：' + (e as Error).message);
     } finally {
@@ -209,8 +245,8 @@ export default function Export() {
             <div className="w-12 h-12 bg-primary-100 rounded-xl flex items-center justify-center mb-3">
               <FileJson size={24} className="text-primary-600" />
             </div>
-            <div className="text-sm font-bold text-primary-800">导出 JSON</div>
-            <div className="text-xs text-primary-500 mt-1">完整数据格式</div>
+            <div className="text-sm font-bold text-primary-800">{appConfig.export.jsonLabel}</div>
+            <div className="text-xs text-primary-500 mt-1">{appConfig.export.jsonDesc}</div>
           </button>
 
           <button
@@ -221,8 +257,8 @@ export default function Export() {
             <div className="w-12 h-12 bg-success-100 rounded-xl flex items-center justify-center mb-3">
               <FileSpreadsheet size={24} className="text-success-600" />
             </div>
-            <div className="text-sm font-bold text-primary-800">导出 CSV</div>
-            <div className="text-xs text-primary-500 mt-1">Excel 兼容格式</div>
+            <div className="text-sm font-bold text-primary-800">{appConfig.export.csvLabel}</div>
+            <div className="text-xs text-primary-500 mt-1">{appConfig.export.csvDesc}</div>
           </button>
         </div>
 
@@ -250,7 +286,7 @@ export default function Export() {
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full ${getStatusColor(record.status)}`}>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full ${getStatusColor(record.status)}`} title={statusConfig[record.status as keyof typeof statusConfig]?.description}>
                         {getStatusLabel(record.status)}
                       </span>
                       {record.anomalyLevel !== 'none' && (

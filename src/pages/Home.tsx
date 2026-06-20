@@ -12,12 +12,15 @@ import {
   ArrowRight,
   Save,
   Wifi,
+  LayoutDashboard,
+  FileEdit,
+  CheckCircle,
 } from 'lucide-react';
 import TopBar from '@/components/TopBar';
 import BottomNav from '@/components/BottomNav';
 import { useStore } from '@/store/useStore';
 import { getTodayString } from '@/utils/id';
-import { appConfig } from '@/config/appConfig';
+import { appConfig, statusConfig } from '@/config/appConfig';
 
 export default function Home() {
   const navigate = useNavigate();
@@ -27,6 +30,8 @@ export default function Home() {
     inspections,
     conflicts,
     offlineMode,
+    sessionRecovered,
+    lastVisitAt,
   } = useStore();
   const [showRecoveryTip, setShowRecoveryTip] = useState(false);
 
@@ -34,40 +39,30 @@ export default function Home() {
 
   const todayInspections = inspections.filter((r) => r.date === today);
   const draftCount = inspections.filter((r) => r.status === 'draft').length;
-  const pendingSyncCount = inspections.filter(
-    (r) => r.status === 'submitted' || r.status === 'draft'
-  ).length;
-  const anomalyCount = inspections.filter((r) => r.anomalyLevel !== 'none' && r.status === 'synced').length;
+  const pendingSyncCount = inspections.filter((r) => r.status === 'submitted').length;
+  const syncedCount = inspections.filter((r) => r.status === 'synced').length;
   const conflictCount = conflicts.filter((c) => !c.resolved).length;
+  const anomalyCount = inspections.filter((r) => r.anomalyLevel !== 'none' && r.status === 'synced').length;
   const totalDevices = devices.length;
   const inspectedToday = new Set(todayInspections.map((r) => r.deviceId)).size;
 
   useEffect(() => {
-    if (draftCount > 0 || pendingSyncCount > 0) {
+    if (sessionRecovered && (draftCount > 0 || pendingSyncCount > 0)) {
       setShowRecoveryTip(true);
       const timer = setTimeout(() => setShowRecoveryTip(false), 8000);
       return () => clearTimeout(timer);
     }
-  }, [draftCount, pendingSyncCount]);
+  }, [draftCount, pendingSyncCount, sessionRecovered]);
 
   const stats = [
     {
-      label: '待巡检设备',
-      value: Math.max(0, totalDevices - inspectedToday),
-      icon: ClipboardList,
-      color: 'bg-primary-500',
-      bgLight: 'bg-primary-50',
-      textColor: 'text-primary-600',
-      path: '/inspections',
-    },
-    {
-      label: '草稿',
+      label: '本地草稿',
       value: draftCount,
-      icon: FileCheck,
+      icon: FileEdit,
       color: 'bg-warning-500',
       bgLight: 'bg-warning-50',
       textColor: 'text-warning-600',
-      path: '/inspections',
+      path: '/status-desk',
     },
     {
       label: '待同步',
@@ -76,6 +71,24 @@ export default function Home() {
       color: 'bg-accent-500',
       bgLight: 'bg-accent-50',
       textColor: 'text-accent-600',
+      path: '/status-desk',
+    },
+    {
+      label: '已同步',
+      value: syncedCount,
+      icon: CheckCircle,
+      color: 'bg-success-500',
+      bgLight: 'bg-success-50',
+      textColor: 'text-success-600',
+      path: '/status-desk',
+    },
+    {
+      label: '冲突',
+      value: conflictCount,
+      icon: Zap,
+      color: 'bg-critical-500',
+      bgLight: 'bg-critical-500/10',
+      textColor: 'text-critical-500',
       path: '/sync',
     },
     {
@@ -87,24 +100,15 @@ export default function Home() {
       textColor: 'text-danger-600',
       path: '/inspections',
     },
-    {
-      label: '冲突',
-      value: conflictCount,
-      icon: Zap,
-      color: 'bg-critical-500',
-      bgLight: 'bg-critical-500/10',
-      textColor: 'text-critical-500',
-      path: '/sync',
-    },
   ];
 
   const quickActions =
     role === 'inspector'
       ? [
           { label: '开始巡检', icon: ClipboardList, path: '/inspections', color: 'bg-primary-600 hover:bg-primary-700' },
-          { label: '同步中心', icon: RefreshCw, path: '/sync', color: 'bg-accent-500 hover:bg-accent-600' },
-          { label: '导出记录', icon: Download, path: '/export', color: 'bg-success-500 hover:bg-success-600' },
-          { label: '操作日志', icon: Clock, path: '/logs', color: 'bg-primary-700 hover:bg-primary-800' },
+          { label: '状态台', icon: LayoutDashboard, path: '/status-desk', color: 'bg-accent-500 hover:bg-accent-600' },
+          { label: '同步中心', icon: RefreshCw, path: '/sync', color: 'bg-success-500 hover:bg-success-600' },
+          { label: '导出记录', icon: Download, path: '/export', color: 'bg-primary-700 hover:bg-primary-800' },
         ]
       : [
           { label: '模板配置', icon: Settings, path: '/templates', color: 'bg-primary-600 hover:bg-primary-700' },
@@ -129,8 +133,8 @@ export default function Home() {
                 <div className="text-xs text-accent-700 space-y-1">
                   {draftCount > 0 && (
                     <div className="flex items-center gap-1">
-                      <FileCheck size={12} />
-                      <span>{draftCount} 条草稿待处理</span>
+                      <FileEdit size={12} />
+                      <span>{draftCount} 条本地草稿待处理</span>
                     </div>
                   )}
                   {pendingSyncCount > 0 && (
@@ -139,16 +143,20 @@ export default function Home() {
                       <span>{pendingSyncCount} 条记录待同步</span>
                     </div>
                   )}
+                  {lastVisitAt && (
+                    <div className="flex items-center gap-1 text-accent-500">
+                      <Clock size={12} />
+                      <span>上次访问：{new Date(lastVisitAt).toLocaleString()}</span>
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-2 mt-3">
-                  {draftCount > 0 && (
-                    <button
-                      onClick={() => navigate('/inspections')}
-                      className="text-xs px-3 py-1.5 bg-accent-500 text-white rounded-lg font-medium hover:bg-accent-600 transition-colors"
-                    >
-                      查看草稿
-                    </button>
-                  )}
+                  <button
+                    onClick={() => navigate('/status-desk')}
+                    className="text-xs px-3 py-1.5 bg-accent-500 text-white rounded-lg font-medium hover:bg-accent-600 transition-colors"
+                  >
+                    查看状态台
+                  </button>
                   {pendingSyncCount > 0 && (
                     <button
                       onClick={() => navigate('/sync')}
@@ -251,6 +259,63 @@ export default function Home() {
                 {offlineMode ? '已开启' : '已关闭'}
               </span>
             </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-card p-4">
+          <h2 className="text-base font-bold text-primary-800 mb-3 flex items-center gap-2">
+            <LayoutDashboard size={18} className="text-primary-500" />
+            巡检状态台
+          </h2>
+          <div className="space-y-3">
+            <button
+              onClick={() => navigate('/status-desk')}
+              className="w-full flex items-center gap-3 p-3 bg-surface-50 rounded-xl hover:bg-surface-100 transition-colors text-left"
+            >
+              <div className="w-10 h-10 bg-warning-100 rounded-lg flex items-center justify-center">
+                <FileEdit size={20} className="text-warning-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-primary-800">本地草稿区</div>
+                <div className="text-xs text-primary-500 mt-0.5">{statusConfig.draft.description}</div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="text-lg font-bold text-warning-600">{draftCount}</div>
+                <ArrowRight size={14} className="text-primary-300 ml-auto" />
+              </div>
+            </button>
+            <button
+              onClick={() => navigate('/status-desk')}
+              className="w-full flex items-center gap-3 p-3 bg-surface-50 rounded-xl hover:bg-surface-100 transition-colors text-left"
+            >
+              <div className="w-10 h-10 bg-accent-100 rounded-lg flex items-center justify-center">
+                <RefreshCw size={20} className="text-accent-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-primary-800">待同步队列</div>
+                <div className="text-xs text-primary-500 mt-0.5">{statusConfig.submitted.description}</div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="text-lg font-bold text-accent-600">{pendingSyncCount}</div>
+                <ArrowRight size={14} className="text-primary-300 ml-auto" />
+              </div>
+            </button>
+            <button
+              onClick={() => navigate('/status-desk')}
+              className="w-full flex items-center gap-3 p-3 bg-surface-50 rounded-xl hover:bg-surface-100 transition-colors text-left"
+            >
+              <div className="w-10 h-10 bg-success-100 rounded-lg flex items-center justify-center">
+                <CheckCircle size={20} className="text-success-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-primary-800">已同步记录</div>
+                <div className="text-xs text-primary-500 mt-0.5">{statusConfig.synced.description}</div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="text-lg font-bold text-success-600">{syncedCount}</div>
+                <ArrowRight size={14} className="text-primary-300 ml-auto" />
+              </div>
+            </button>
           </div>
         </div>
 

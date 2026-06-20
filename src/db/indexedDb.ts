@@ -1,4 +1,4 @@
-import { openDB, IDBPDatabase, DBSchema } from 'idb';
+import { openDB, IDBPDatabase, IDBPObjectStore, DBSchema, StoreNames } from 'idb';
 import type {
   Template,
   Device,
@@ -66,7 +66,7 @@ let dbPromise: Promise<IDBPDatabase<InspectionDB>> | null = null;
 export function getDB(): Promise<IDBPDatabase<InspectionDB>> {
   if (!dbPromise) {
     dbPromise = openDB<InspectionDB>(DB_NAME, DB_VERSION, {
-      upgrade(db, oldVersion) {
+      upgrade(db) {
         if (!db.objectStoreNames.contains('templates')) {
           db.createObjectStore('templates', { keyPath: 'id' });
         }
@@ -76,9 +76,11 @@ export function getDB(): Promise<IDBPDatabase<InspectionDB>> {
         if (!db.objectStoreNames.contains('inspections')) {
           const store = db.createObjectStore('inspections', { keyPath: 'id' });
           store.createIndex('by-device-date', ['deviceId', 'date']);
-        }
-        if (oldVersion < 2) {
-          const inspStore = db.objectStore('inspections');
+          store.createIndex('by-status', 'status');
+          store.createIndex('by-date', 'date');
+        } else {
+          const tx = db.transaction('inspections', 'versionchange');
+          const inspStore = tx.store;
           if (!inspStore.indexNames.contains('by-status')) {
             inspStore.createIndex('by-status', 'status');
           }
