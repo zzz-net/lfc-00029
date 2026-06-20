@@ -19,9 +19,12 @@ import type {
   AuditLogEntry,
   RecordMeta,
   Device,
+  CsvColumnMapping,
+  RevertPreviewItem,
+  RevertConflictInfo,
 } from '@/types';
 import { validateRecord, type ValidationError } from '@/utils/validation';
-import { statusConfig, actionConfig, validationMessages, featureFlags, buttonDisableReasons } from '@/config/appConfig';
+import { statusConfig, actionConfig, validationMessages, featureFlags, buttonDisableReasons, csvColumnMappings, revertModuleConfig } from '@/config/appConfig';
 
 export const STATUS_TRANSITIONS: Record<RecordStatus, RecordStatus[]> = {
   draft: ['submitted', 'withdrawn'],
@@ -786,4 +789,315 @@ export function computeButtonActions(
   });
 
   return actions;
+}
+
+export function buildColumnNameMap(): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const col of csvColumnMappings) {
+    map.set(col.displayName, col.fieldName);
+  }
+  return map;
+}
+
+export function buildReverseColumnNameMap(): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const col of csvColumnMappings) {
+    map.set(col.fieldName, col.displayName);
+  }
+  return map;
+}
+
+export function getColumnMappings(): CsvColumnMapping[] {
+  return csvColumnMappings.map(c => ({
+    displayName: c.displayName,
+    fieldName: c.fieldName,
+    required: c.required,
+    description: c.description,
+  }));
+}
+
+export function normalizeCsvHeaders(headers: string[]): { normalized: string[]; unknown: string[] } {
+  const nameMap = buildColumnNameMap();
+  const normalized: string[] = [];
+  const unknown: string[] = [];
+  for (const h of headers) {
+    const trimmed = h.trim();
+    if (nameMap.has(trimmed)) {
+      normalized.push(nameMap.get(trimmed)!);
+    } else {
+      normalized.push(trimmed);
+      if (!trimmed) continue;
+      let found = false;
+      for (const col of csvColumnMappings) {
+        if (col.fieldName === trimmed) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) unknown.push(trimmed);
+    }
+  }
+  return { normalized, unknown };
+}
+
+export function parseRevertCsvToRecords(csvText: string): {
+  records: any[];
+  unknownColumns: string[];
+  missingRequired: string[];
+} {
+  const lines = csvText.split('\n').filter(l => l.trim());
+  if (lines.length < 2) {
+    return { records: [], unknownColumns: [], missingRequired: ['记录ID', '设备ID', '巡检日期', '模板ID', '模板版本', '状态', '巡检内容'] };
+  }
+  const rawHeaders = parseCsvLine(lines[0]);
+  const { normalized: headers, unknown } = normalizeCsvHeaders(rawHeaders);
+
+  const requiredDisplayNames = csvColumnMappings.filter(c => c.required).map(c => c.displayName);
+  const requiredFieldNames = csvColumnMappings.filter(c => c.required).map(c => c.fieldName);
+  const missingRequired: string[] = [];
+  for (let i = 0; i < requiredFieldNames.length; i++) {
+    if (!headers.includes(requiredFieldNames[i])) {
+      missingRequired.push(requiredDisplayNames[i]);
+    }
+  }
+
+  const records: any[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseCsvLine(lines[i]);
+    if (values.length !== headers.length) continue;
+    const obj: Record<string, any> = {};
+    for (let j = 0; j < headers.length; j++) {
+      obj[headers[j]] = values[j];
+    }
+    try {
+      if (obj.values && typeof obj.values === 'string') {
+        try { obj.values = JSON.parse(obj.values); } catch { /* keep string */ }
+      }
+      if (obj.photos && typeof obj.photos === 'string') {
+        try { obj.photos = JSON.parse(obj.photos); } catch { /* keep string */ }
+      }
+      if (obj.templateVersion) obj.templateVersion = Number(obj.templateVersion);
+      if (obj.submissionCount) obj.submissionCount = Number(obj.submissionCount);
+      if (obj.withdrawCount) obj.withdrawCount = Number(obj.withdrawCount);
+      if (obj.photoCount) obj.photoCount = Number(obj.photoCount);
+    } catch {
+      // keep as-is
+    }
+    records.push(obj);
+  }
+
+  return { records, unknownColumns: unknown, missingRequired };
+}
+
+export function buildCsvTemplate(): string {
+  const headers = csvColumnMappings.map(c => c.displayName);
+  const sample: string[] = csvColumnMappings.map(c => {
+    switch (c.fieldName) {
+      case 'id': return 'rec_示例ID';
+      case 'deviceCode': return 'PUMP-001';
+      case 'deviceId': return 'dev_示例设备ID';
+      case 'deviceName': return '1号循环泵';
+      case 'deviceLocation': return 'A区泵房';
+      case 'deviceCategory': return '泵类';
+      case 'date': return '2024-01-15';
+      case 'templateId': return 'tpl_示例模板ID';
+      case 'templateName': return '泵类日常巡检模板';
+      case 'templateVersion': return '1';
+      case 'inspectorId': return 'inspector_001';
+      case 'inspectorName': return '张巡检';
+      case 'status': return 'draft';
+      case 'anomalyLevel': return 'none';
+      case 'submissionCount': return '0';
+      case 'withdrawCount': return '0';
+      case 'photoCount': return '0';
+      case 'values': return '{}';
+      case 'photos': return '[]';
+      case 'createdAt': return new Date().toISOString();
+      case 'updatedAt': return new Date().toISOString();
+      default: return '';
+    }
+  });
+  const csv = [headers, sample]
+    .map(row => row.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  return '\uFEFF' + csv;
+}
+
+export function computeConfigFingerprint(
+  templates: Template[],
+  devices: Device[]
+): string {
+  const tplFingerprint = templates
+    .slice()
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(t => `${t.id}:v${t.version}:${t.fields.length}`)
+    .join('|');
+  const devFingerprint = devices
+    .slice()
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(d => `${d.id}:${d.code}`)
+    .join('|');
+  const combined = `${tplFingerprint}||${devFingerprint}`;
+  let hash = 0;
+  for (let i = 0; i < combined.length; i++) {
+    hash = ((hash << 5) - hash) + combined.charCodeAt(i);
+    hash |= 0;
+  }
+  return 'fp_' + Math.abs(hash).toString(36);
+}
+
+export function isRevertDraftStale(
+  draftFingerprint: string,
+  currentTemplates: Template[],
+  currentDevices: Device[]
+): boolean {
+  if (!revertModuleConfig.enableConfigFingerprint) return false;
+  const currentFp = computeConfigFingerprint(currentTemplates, currentDevices);
+  return draftFingerprint !== currentFp;
+}
+
+export function isRevertDraftExpired(createdAt: string): boolean {
+  const ageMs = Date.now() - new Date(createdAt).getTime();
+  const ageHours = ageMs / (1000 * 60 * 60);
+  return ageHours > revertModuleConfig.maxDraftAgeHours;
+}
+
+export function buildRevertPreviewItems(
+  importRecords: InspectionRecord[],
+  existingRecords: InspectionRecord[],
+  devices: Device[]
+): {
+  items: RevertPreviewItem[];
+  conflicts: RevertConflictInfo[];
+  duplicates: RevertPreviewItem[];
+} {
+  const items: RevertPreviewItem[] = [];
+  const conflicts: RevertConflictInfo[] = [];
+  const duplicates: RevertPreviewItem[] = [];
+
+  const existingById = new Map(existingRecords.map(r => [r.id, r]));
+  const existingByDeviceDate = new Map<string, InspectionRecord>();
+  for (const r of existingRecords) {
+    if (r.status === 'submitted' || r.status === 'synced') {
+      const key = `${r.deviceId}_${r.date}`;
+      if (!existingByDeviceDate.has(key)) {
+        existingByDeviceDate.set(key, r);
+      }
+    }
+  }
+
+  for (const record of importRecords) {
+    const device = devices.find(d => d.id === record.deviceId);
+    let action: RevertPreviewItem['action'] = 'insert';
+    let detail = '';
+
+    if (existingById.has(record.id)) {
+      action = 'skip';
+      detail = '记录ID已存在';
+      const existing = existingById.get(record.id)!;
+      conflicts.push({
+        recordId: record.id,
+        type: 'id_duplicate',
+        existingRecord: existing,
+        importRecord: record,
+        detail: `记录ID已存在，当前状态：${existing.status}`,
+        resolution: 'skip',
+      });
+    } else {
+      const key = `${record.deviceId}_${record.date}`;
+      const sameDayDevice = existingByDeviceDate.get(key);
+      if (sameDayDevice && (record.status === 'submitted' || record.status === 'synced')) {
+        const importHash = computeValuesHash(record.values);
+        const existingHash = computeValuesHash(sameDayDevice.values);
+        if (importHash === existingHash) {
+          action = 'skip';
+          detail = '同设备同日且内容完全相同';
+          duplicates.push({
+            recordId: record.id,
+            deviceCode: device?.code || '',
+            deviceName: device?.name || '',
+            date: record.date,
+            status: record.status,
+            action: 'skip',
+            detail,
+          });
+          conflicts.push({
+            recordId: record.id,
+            type: 'values_hash_match',
+            existingRecord: sameDayDevice,
+            importRecord: record,
+            detail: '同设备同日且数据内容完全相同',
+            resolution: 'skip',
+          });
+        } else {
+          action = 'conflict';
+          detail = '同设备同日但内容不同';
+          conflicts.push({
+            recordId: record.id,
+            type: 'same_device_date',
+            existingRecord: sameDayDevice,
+            importRecord: record,
+            detail: '同设备同日已有提交记录，但内容不同',
+            resolution: 'skip',
+          });
+        }
+      }
+    }
+
+    items.push({
+      recordId: record.id,
+      deviceCode: device?.code || '',
+      deviceName: device?.name || '',
+      date: record.date,
+      status: record.status,
+      action,
+      detail,
+    });
+  }
+
+  return { items, conflicts, duplicates };
+}
+
+export function computeRevertImportId(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `IMP-${ts}-${rand}`;
+}
+
+export function validateRevertImportForSameDeviceSameDay(
+  importRecords: InspectionRecord[],
+  existingRecords: InspectionRecord[],
+  currentDeviceId: string,
+  currentDate: string
+): { blocked: InspectionRecord[]; blockedCount: number } {
+  if (!revertModuleConfig.enableDuplicateBlocking) {
+    return { blocked: [], blockedCount: 0 };
+  }
+
+  const existingSubmissions = existingRecords.filter(
+    r => r.deviceId === currentDeviceId
+      && r.date === currentDate
+      && (r.status === 'submitted' || r.status === 'synced')
+  );
+  if (existingSubmissions.length === 0) {
+    return { blocked: [], blockedCount: 0 };
+  }
+
+  const blocked: InspectionRecord[] = [];
+  for (const rec of importRecords) {
+    if (rec.deviceId === currentDeviceId && rec.date === currentDate
+      && (rec.status === 'submitted' || rec.status === 'synced' || rec.status === 'draft')) {
+      const importHash = computeValuesHash(rec.values);
+      for (const existing of existingSubmissions) {
+        if (computeValuesHash(existing.values) === importHash) {
+          blocked.push(rec);
+          break;
+        }
+      }
+    }
+  }
+
+  return { blocked, blockedCount: blocked.length };
 }

@@ -13,6 +13,8 @@ import type {
   SubmissionReceipt,
   AuditLogEntry,
   SessionState,
+  RevertDraftState,
+  RevertImportResult,
 } from '@/types';
 
 interface InspectionDB extends DBSchema {
@@ -74,10 +76,20 @@ interface InspectionDB extends DBSchema {
     value: SessionState;
     indexes: { 'by-user-device': [string, string] };
   };
+  revertDrafts: {
+    key: string;
+    value: RevertDraftState;
+    indexes: { 'by-device': string; 'by-createdAt': string };
+  };
+  revertImportHistory: {
+    key: string;
+    value: RevertImportResult;
+    indexes: { 'by-device': string; 'by-createdAt': string };
+  };
 }
 
 const DB_NAME = 'inspection-db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let dbPromise: Promise<IDBPDatabase<InspectionDB>> | null = null;
 
@@ -147,6 +159,16 @@ export function getDB(): Promise<IDBPDatabase<InspectionDB>> {
         if (!db.objectStoreNames.contains('sessionStates')) {
           const ss = db.createObjectStore('sessionStates', { keyPath: 'id' });
           ss.createIndex('by-user-device', ['userId', 'deviceId']);
+        }
+        if (!db.objectStoreNames.contains('revertDrafts')) {
+          const rd = db.createObjectStore('revertDrafts', { keyPath: 'id' });
+          rd.createIndex('by-device', 'deviceFingerprint');
+          rd.createIndex('by-createdAt', 'createdAt');
+        }
+        if (!db.objectStoreNames.contains('revertImportHistory')) {
+          const rh = db.createObjectStore('revertImportHistory', { keyPath: 'batchId' });
+          rh.createIndex('by-device', 'deviceId');
+          rh.createIndex('by-createdAt', 'createdAt');
         }
       },
     });
@@ -494,10 +516,57 @@ export async function deleteSessionState(id: string): Promise<void> {
   await db.delete('sessionStates', id);
 }
 
+export async function getAllRevertDrafts(): Promise<RevertDraftState[]> {
+  const db = await getDB();
+  return db.getAll('revertDrafts');
+}
+
+export async function getRevertDraft(id: string): Promise<RevertDraftState | undefined> {
+  const db = await getDB();
+  return db.get('revertDrafts', id);
+}
+
+export async function getLatestRevertDraftByDevice(deviceFingerprint: string): Promise<RevertDraftState | undefined> {
+  const db = await getDB();
+  const all = await db.getAllFromIndex('revertDrafts', 'by-device', deviceFingerprint);
+  return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+
+export async function putRevertDraft(draft: RevertDraftState): Promise<void> {
+  const db = await getDB();
+  await db.put('revertDrafts', draft);
+}
+
+export async function deleteRevertDraft(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('revertDrafts', id);
+}
+
+export async function getAllRevertImportHistory(): Promise<RevertImportResult[]> {
+  const db = await getDB();
+  const all = await db.getAll('revertImportHistory');
+  return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function getRevertImportHistory(batchId: string): Promise<RevertImportResult | undefined> {
+  const db = await getDB();
+  return db.get('revertImportHistory', batchId);
+}
+
+export async function putRevertImportHistory(history: RevertImportResult): Promise<void> {
+  const db = await getDB();
+  await db.put('revertImportHistory', history);
+}
+
+export async function deleteRevertImportHistory(batchId: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('revertImportHistory', batchId);
+}
+
 export async function clearAllData(): Promise<void> {
   const db = await getDB();
   const tx = db.transaction(
-    ['templates', 'devices', 'inspections', 'conflicts', 'logs', 'syncQueue', 'statusHistory', 'submissionSnapshots', 'recordMeta', 'submissionReceipts', 'auditLogs', 'sessionStates'],
+    ['templates', 'devices', 'inspections', 'conflicts', 'logs', 'syncQueue', 'statusHistory', 'submissionSnapshots', 'recordMeta', 'submissionReceipts', 'auditLogs', 'sessionStates', 'revertDrafts', 'revertImportHistory'],
     'readwrite'
   );
   await Promise.all([
@@ -513,6 +582,8 @@ export async function clearAllData(): Promise<void> {
     tx.objectStore('submissionReceipts').clear(),
     tx.objectStore('auditLogs').clear(),
     tx.objectStore('sessionStates').clear(),
+    tx.objectStore('revertDrafts').clear(),
+    tx.objectStore('revertImportHistory').clear(),
   ]);
   await tx.done;
 }

@@ -281,6 +281,21 @@ export interface ImportResult {
   skippedCount: number;
   errors: ImportErrorItem[];
   importedIds: string[];
+  warnings?: string[];
+  conflicts?: any[];
+  compatibilityReports?: any[];
+}
+
+export interface RevertPreviewResult {
+  previewItems: RevertPreviewItem[];
+  validRecords: InspectionRecord[];
+  errors: ImportErrorItem[];
+  conflicts: RevertConflictInfo[];
+  duplicates: any[];
+  blocked: InspectionRecord[];
+  blockedCount: number;
+  skipped: any[];
+  compatibilityReports: any[];
 }
 
 export interface ImportErrorItem {
@@ -295,4 +310,71 @@ export interface ButtonActionState {
   disabled: boolean;
   reason: string;
   variant: 'primary' | 'warning' | 'danger' | 'info' | 'ghost';
+}
+
+export interface CsvColumnMapping {
+  displayName: string;
+  fieldName: string;
+  required: boolean;
+  description?: string;
+}
+
+export interface RevertPreviewItem {
+  recordId: string;
+  deviceCode: string;
+  deviceName: string;
+  date: string;
+  status: RecordStatus;
+  action: 'insert' | 'update' | 'skip' | 'conflict';
+  detail?: string;
+}
+
+export interface RevertImportResult extends ImportResult {
+  batchId: string;
+  previewItems: RevertPreviewItem[];
+  createdAt: string;
+  reverted?: boolean;
+  revertedAt?: string;
+}
+
+export interface RevertDraftState {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  fileContent: string;
+  format: 'csv' | 'json';
+  createdAt: string;
+  templateFingerprint: string;
+  deviceFingerprint: string;
+  previewItems?: RevertPreviewItem[];
+  parsedData?: any[];
+}
+
+export interface RevertModuleConfig {
+  sectionTitle: string;
+  description: string;
+  exportTemplateButton: string;
+  importButton: string;
+  previewButton: string;
+  confirmButton: string;
+  revertButton: string;
+  historyTitle: string;
+  emptyHistoryText: string;
+  draftRecoveryTitle: string;
+  draftRecoveryMessage: string;
+  staleDraftMessage: string;
+  staleDraftActionLabel: string;
+  staleDraftDismissLabel: string;
+  duplicateBlockTitle: string;
+  duplicateBlockMessage: string;
+  columnMappingTitle: string;
+}
+
+export interface RevertConflictInfo {
+  recordId: string;
+  type: 'id_duplicate' | 'same_device_date' | 'values_hash_match';
+  existingRecord?: InspectionRecord;
+  importRecord: InspectionRecord;
+  detail: string;
+  resolution: 'skip' | 'overwrite' | 'new_version';
 }

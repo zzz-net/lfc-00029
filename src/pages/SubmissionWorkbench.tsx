@@ -6,6 +6,7 @@ import BottomNav from '@/components/BottomNav';
 import TodoList from '@/components/TodoList';
 import RecordDetailSidebar from '@/components/RecordDetailSidebar';
 import CreateSubmissionModal from '@/components/CreateSubmissionModal';
+import RevertTraceModule from '@/components/RevertTraceModule';
 import { useStore } from '@/store/useStore';
 import { appConfig, workbenchSections, statusConfig, featureFlags, validationMessages, staleDraftConfig, importConfig, operationLogConfig } from '@/config/appConfig';
 import { getMissingRequiredFields } from '@/lib/submissionWorkbench';
@@ -511,6 +512,8 @@ export default function SubmissionWorkbench() {
             </div>
           </div>
         )}
+
+        <RevertTraceModule />
 
         <TodoList
           section="todo"

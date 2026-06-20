@@ -693,7 +693,10 @@ describe('useStore - 提交工作台：CSV 导出导入闭环验证', () => {
     inspectorName: '张三',
     date: '2024-06-20',
     values: { temperature: '25.5', pressure: '101.3', notes: '正常' },
-    photos: ['photo1.jpg', 'photo2.jpg'],
+    photos: [
+      { id: 'ph1', placeholderName: 'photo1.jpg', size: 102400, createdAt: '2024-06-20T08:00:00.000Z' },
+      { id: 'ph2', placeholderName: 'photo2.jpg', size: 204800, createdAt: '2024-06-20T08:05:00.000Z' },
+    ],
     anomalyLevel: 'none' as AnomalyLevel,
     status: 'submitted',
     createdAt: '2024-06-20T08:00:00.000Z',

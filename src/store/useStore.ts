@@ -33,6 +33,20 @@ import {
   getAllSessionStates,
   putSessionState as dbPutSession,
   getSessionByUserDevice as dbGetSessionByUserDevice,
+  getAllRevertDrafts,
+  getLatestRevertDraftByDevice,
+  putRevertDraft,
+  deleteRevertDraft,
+  getAllRevertImportHistory,
+  putRevertImportHistory,
+  getRevertImportHistory as dbGetRevertHistory,
+  deleteRevertImportHistory,
+  deleteInspection,
+  deleteRecordMeta,
+  deleteStatusHistoryByRecord,
+  deleteSubmissionSnapshotsByRecord,
+  deleteReceiptsByRecord,
+  deleteAuditLogsByRecord,
 } from '@/db/indexedDb';
 import {
   generateReceiptNo,
@@ -50,8 +64,17 @@ import {
   checkImportConflicts,
   checkFieldCompatibility,
   applyFieldCompatibilityFix,
+  parseRevertCsvToRecords,
+  buildCsvTemplate,
+  computeConfigFingerprint,
+  isRevertDraftStale,
+  isRevertDraftExpired,
+  buildRevertPreviewItems,
+  computeRevertImportId,
+  validateRevertImportForSameDeviceSameDay,
+  buildReverseColumnNameMap,
 } from '@/lib/submissionWorkbench';
-import { featureFlags } from '@/config/appConfig';
+import { featureFlags, csvColumnMappings, revertModuleConfig } from '@/config/appConfig';
 import { apiClient } from '@/api/client';
 import { generateId, getTodayString } from '@/utils/id';
 import { calculateAnomalyLevel } from '@/utils/anomaly';
@@ -78,6 +101,11 @@ import type {
   ExportFormat,
   StaleDraftInfo,
   ImportResult,
+  RevertDraftState,
+  RevertImportResult,
+  RevertPreviewItem,
+  CsvColumnMapping,
+  RevertPreviewResult,
 } from '@/types';
 
 interface AppStore {
@@ -107,6 +135,10 @@ interface AppStore {
   sessionRecovered: boolean;
   lastVisitAt: string | null;
   recoveredSession: SessionState | null;
+
+  revertDrafts: RevertDraftState[];
+  revertImportHistory: RevertImportResult[];
+  latestRevertDraft: RevertDraftState | null;
 
   setRole: (role: UserRole) => void;
   setOfflineMode: (offline: boolean) => void;
@@ -151,7 +183,7 @@ interface AppStore {
   getTimelineEvents: (recordId: string) => TimelineEvent[];
 
   markRecordExported: (recordId: string) => Promise<void>;
-  exportRecords: (filter: ExportFilter, format: ExportFormat) => Promise<any[]>;
+  exportRecords: (filter: ExportFilter, format: ExportFormat, options?: { fullData?: boolean }) => Promise<any[]>;
 
   saveSession: (session: Partial<SessionState>) => Promise<void>;
   restoreSession: () => Promise<SessionState | null>;
@@ -159,7 +191,29 @@ interface AppStore {
 
   getStaleDrafts: () => StaleDraftInfo[];
   migrateStaleDraft: (recordId: string) => Promise<InspectionRecord>;
-  importRecords: (data: any[], format: 'json' | 'csv') => Promise<ImportResult>;
+  importRecords: (data: any[], format: 'json' | 'csv', options?: { skipDuplicateId?: boolean; autoFixCompatibility?: boolean }) => Promise<ImportResult>;
+
+  getColumnMappings: () => CsvColumnMapping[];
+  exportCsvTemplate: () => string;
+  parseRevertCsv: (csvText: string) => { records: any[]; unknownColumns: string[]; missingRequired: string[] };
+  previewRevertImport: (
+    records: any[],
+    format: 'csv' | 'json'
+  ) => Promise<RevertPreviewResult>;
+  saveRevertDraft: (draft: Omit<RevertDraftState, 'id' | 'createdAt' | 'templateFingerprint' | 'deviceFingerprint'>) => Promise<RevertDraftState>;
+  restoreRevertDraft: () => Promise<RevertDraftState | null>;
+  clearRevertDraft: () => Promise<void>;
+  isCurrentRevertDraftStale: (draft: RevertDraftState) => boolean;
+  revertImportWithHistory: (
+    records: any[],
+    format: 'csv' | 'json'
+  ) => Promise<RevertImportResult>;
+  rollbackRevertImport: (batchId: string) => Promise<void>;
+  getRevertHistory: () => RevertImportResult[];
+  getCurrentConfigFingerprint: () => string;
+  validateSameDeviceDayDuplicates: (
+    importRecords: InspectionRecord[]
+  ) => { blocked: InspectionRecord[]; blockedCount: number };
 
   resetError: () => void;
 }
@@ -192,6 +246,10 @@ export const useStore = create<AppStore>((set, get) => ({
   lastVisitAt: null,
   recoveredSession: null,
 
+  revertDrafts: [],
+  revertImportHistory: [],
+  latestRevertDraft: null,
+
   setRole: (role: UserRole) => {
     set({ role });
     setAppState('role', role);
@@ -223,6 +281,8 @@ export const useStore = create<AppStore>((set, get) => ({
         submissionReceipts,
         auditLogs,
         sessionStates,
+        revertDrafts,
+        revertImportHistoryList,
         savedRole,
         savedOffline,
         lastVisit,
@@ -239,6 +299,8 @@ export const useStore = create<AppStore>((set, get) => ({
         getAllSubmissionReceipts(),
         getAllAuditLogs(),
         getAllSessionStates(),
+        getAllRevertDrafts(),
+        getAllRevertImportHistory(),
         getAppState('role'),
         getAppState('offlineMode'),
         getAppState('lastVisitAt'),
@@ -256,6 +318,21 @@ export const useStore = create<AppStore>((set, get) => ({
         }
       }
 
+      let latestRevertDraft: RevertDraftState | null = null;
+      if (revertModuleConfig.enableDraftRecovery) {
+        try {
+          latestRevertDraft = await getLatestRevertDraftByDevice(state.currentDeviceId);
+          if (latestRevertDraft && (isRevertDraftExpired(latestRevertDraft.createdAt))) {
+            await deleteRevertDraft(latestRevertDraft.id);
+            latestRevertDraft = null;
+          }
+        } catch (e) {
+          console.warn('Failed to restore revert draft:', e);
+        }
+      }
+
+      const sortedHistory = revertImportHistoryList.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
       set({
         templates,
         devices,
@@ -269,6 +346,9 @@ export const useStore = create<AppStore>((set, get) => ({
         submissionReceipts,
         auditLogs,
         sessionStates,
+        revertDrafts,
+        revertImportHistory: sortedHistory,
+        latestRevertDraft,
         role: savedRole || 'inspector',
         offlineMode: savedOffline || false,
         networkStatus: savedOffline ? 'offline' : 'online',
@@ -1827,6 +1907,230 @@ export const useStore = create<AppStore>((set, get) => ({
       conflicts: importConflicts,
       compatibilityReports,
     };
+  },
+
+  getColumnMappings: () => {
+    return csvColumnMappings.map(c => ({
+      displayName: c.displayName,
+      fieldName: c.fieldName,
+      required: c.required,
+      description: c.description,
+    }));
+  },
+
+  exportCsvTemplate: () => {
+    return buildCsvTemplate();
+  },
+
+  parseRevertCsv: (csvText: string) => {
+    return parseRevertCsvToRecords(csvText);
+  },
+
+  previewRevertImport: async (records: any[], format: 'csv' | 'json') => {
+    const { inspections, devices, templates, currentDeviceId } = get();
+
+    let parsedData = records;
+    if (format === 'csv' && records.length > 0 && typeof records[0] === 'string') {
+      const parsed = parseRevertCsvToRecords(records[0] as string);
+      parsedData = parsed.records;
+    }
+
+    const { valid, skipped, errors } = validateImportData(parsedData, inspections, { skipDuplicateId: false });
+
+    const { items: previewItems, conflicts, duplicates } = buildRevertPreviewItems(valid, inspections, devices);
+
+    const { blocked, blockedCount } = validateRevertImportForSameDeviceSameDay(
+      valid,
+      inspections,
+      currentDeviceId,
+      getTodayString()
+    );
+
+    const compatibilityReports = checkFieldCompatibility(valid, templates);
+
+    return {
+      previewItems,
+      validRecords: valid,
+      errors,
+      conflicts,
+      duplicates,
+      skipped,
+      blocked,
+      blockedCount,
+      compatibilityReports,
+    };
+  },
+
+  saveRevertDraft: async (draft) => {
+    const { templates, devices, currentDeviceId } = get();
+    const now = new Date().toISOString();
+    const fullDraft: RevertDraftState = {
+      id: generateId('rvd'),
+      createdAt: now,
+      templateFingerprint: computeConfigFingerprint(templates, devices),
+      deviceFingerprint: currentDeviceId,
+      ...draft,
+    };
+    await putRevertDraft(fullDraft);
+    set((state) => ({
+      revertDrafts: [...state.revertDrafts, fullDraft],
+      latestRevertDraft: fullDraft,
+    }));
+    return fullDraft;
+  },
+
+  restoreRevertDraft: async () => {
+    const { currentDeviceId } = get();
+    try {
+      const draft = await getLatestRevertDraftByDevice(currentDeviceId);
+      if (draft && !isRevertDraftExpired(draft.createdAt)) {
+        set({ latestRevertDraft: draft });
+        return draft;
+      }
+      if (draft) {
+        await deleteRevertDraft(draft.id);
+      }
+      return null;
+    } catch (e) {
+      console.warn('Failed to restore revert draft:', e);
+      return null;
+    }
+  },
+
+  clearRevertDraft: async () => {
+    const { latestRevertDraft } = get();
+    if (latestRevertDraft) {
+      await deleteRevertDraft(latestRevertDraft.id);
+    }
+    set((state) => ({
+      latestRevertDraft: null,
+      revertDrafts: state.revertDrafts.filter(d => d.id !== latestRevertDraft?.id),
+    }));
+  },
+
+  isCurrentRevertDraftStale: (draft: RevertDraftState) => {
+    const { templates, devices } = get();
+    return isRevertDraftStale(draft.templateFingerprint, templates, devices);
+  },
+
+  getCurrentConfigFingerprint: () => {
+    const { templates, devices } = get();
+    return computeConfigFingerprint(templates, devices);
+  },
+
+  validateSameDeviceDayDuplicates: (importRecords: InspectionRecord[]) => {
+    const { inspections, currentDeviceId } = get();
+    return validateRevertImportForSameDeviceSameDay(
+      importRecords,
+      inspections,
+      currentDeviceId,
+      getTodayString()
+    );
+  },
+
+  revertImportWithHistory: async (records: any[], format: 'csv' | 'json') => {
+    const { currentUserId, currentUserName, currentDeviceId, inspections } = get();
+    const batchId = computeRevertImportId();
+    const now = new Date().toISOString();
+
+    const preview = await get().previewRevertImport(records, format);
+
+    const recordsToImport = preview.validRecords.filter(r => {
+      const previewItem = preview.previewItems.find(p => p.recordId === r.id);
+      return previewItem && previewItem.action !== 'skip' && previewItem.action !== 'conflict';
+    });
+
+    const blockedIds = new Set(preview.blocked.map(b => b.id));
+    const finalRecordsToImport = recordsToImport.filter(r => !blockedIds.has(r.id));
+
+    const result: ImportResult = await get().importRecords(
+      finalRecordsToImport.map(r => ({ ...r, __keep_as_is: true })),
+      'json',
+      { skipDuplicateId: true, autoFixCompatibility: true }
+    );
+
+    const historyItem: RevertImportResult = {
+      batchId,
+      createdAt: now,
+      previewItems: preview.previewItems,
+      successCount: result.successCount,
+      failCount: result.failCount,
+      skippedCount: result.skippedCount + preview.blockedCount,
+      errors: result.errors,
+      importedIds: result.importedIds,
+    };
+
+    await putRevertImportHistory(historyItem);
+
+    set((state) => {
+      const newHistory = [historyItem, ...state.revertImportHistory].slice(0, revertModuleConfig.maxHistoryCount);
+      return { revertImportHistory: newHistory };
+    });
+
+    await get().addLogEntry({
+      userId: currentUserId,
+      userName: currentUserName,
+      action: '回灌导入记录',
+      target: batchId,
+      detail: `批次 ${batchId}：成功 ${result.successCount} 条，跳过 ${result.skippedCount + preview.blockedCount} 条，失败 ${result.failCount} 条`,
+      result: result.failCount > 0 ? 'conflict' : 'success',
+    });
+
+    return historyItem;
+  },
+
+  rollbackRevertImport: async (batchId: string) => {
+    const { currentUserId, currentUserName } = get();
+    const history = await dbGetRevertHistory(batchId);
+    if (!history) throw new Error('导入批次不存在');
+    if (history.reverted) throw new Error('该批次已被撤销');
+
+    const idsToDelete = history.importedIds || [];
+    for (const recordId of idsToDelete) {
+      try {
+        await deleteInspection(recordId);
+        await deleteRecordMeta(recordId);
+        await deleteStatusHistoryByRecord(recordId);
+        await deleteSubmissionSnapshotsByRecord(recordId);
+        await deleteReceiptsByRecord(recordId);
+        await deleteAuditLogsByRecord(recordId);
+      } catch (e) {
+        console.warn(`Failed to delete record ${recordId} during rollback:`, e);
+      }
+    }
+
+    const now = new Date().toISOString();
+    const updatedHistory: RevertImportResult = {
+      ...history,
+      reverted: true,
+      revertedAt: now,
+    };
+    await putRevertImportHistory(updatedHistory);
+
+    set((state) => ({
+      inspections: state.inspections.filter(r => !idsToDelete.includes(r.id)),
+      recordMetaList: state.recordMetaList.filter(m => !idsToDelete.includes(m.recordId)),
+      statusHistory: state.statusHistory.filter(h => !idsToDelete.includes(h.recordId)),
+      submissionSnapshots: state.submissionSnapshots.filter(s => !idsToDelete.includes(s.recordId)),
+      submissionReceipts: state.submissionReceipts.filter(r => !idsToDelete.includes(r.recordId)),
+      auditLogs: state.auditLogs.filter(a => !idsToDelete.includes(a.recordId)),
+      revertImportHistory: state.revertImportHistory.map(h =>
+        h.batchId === batchId ? updatedHistory : h
+      ),
+    }));
+
+    await get().addLogEntry({
+      userId: currentUserId,
+      userName: currentUserName,
+      action: '撤销回灌导入',
+      target: batchId,
+      detail: `已撤销批次 ${batchId}，删除 ${idsToDelete.length} 条导入记录`,
+      result: 'success',
+    });
+  },
+
+  getRevertHistory: () => {
+    return get().revertImportHistory;
   },
 
   resetError: () => set({ error: null }),

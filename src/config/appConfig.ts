@@ -352,6 +352,106 @@ export const operationLogConfig: OperationLogConfig = {
   maxDisplayCount: 20,
 };
 
+export interface RevertModuleConfigType {
+  sectionTitle: string;
+  description: string;
+  exportTemplateButton: string;
+  importButton: string;
+  previewButton: string;
+  confirmButton: string;
+  revertButton: string;
+  revertConfirmTitle: string;
+  revertConfirmMessage: string;
+  historyTitle: string;
+  emptyHistoryText: string;
+  draftRecoveryTitle: string;
+  draftRecoveryMessage: string;
+  staleDraftMessage: string;
+  staleDraftActionLabel: string;
+  staleDraftDismissLabel: string;
+  duplicateBlockTitle: string;
+  duplicateBlockMessage: string;
+  columnMappingTitle: string;
+  resultPreviewTitle: string;
+  maxHistoryCount: number;
+  maxDraftAgeHours: number;
+  enableRevert: boolean;
+  enableDraftRecovery: boolean;
+  enableDuplicateBlocking: boolean;
+  enableConfigFingerprint: boolean;
+}
+
+export const csvColumnMappings: Array<{ displayName: string; fieldName: string; required: boolean; description?: string }> = [
+  { displayName: '记录ID', fieldName: 'id', required: true, description: '系统生成的唯一记录标识，导入时保留用于追溯' },
+  { displayName: '设备编号', fieldName: 'deviceCode', required: false },
+  { displayName: '设备ID', fieldName: 'deviceId', required: true, description: '设备的内部唯一ID' },
+  { displayName: '设备名称', fieldName: 'deviceName', required: false },
+  { displayName: '设备位置', fieldName: 'deviceLocation', required: false },
+  { displayName: '设备分类', fieldName: 'deviceCategory', required: false },
+  { displayName: '巡检日期', fieldName: 'date', required: true, description: '格式 YYYY-MM-DD' },
+  { displayName: '模板ID', fieldName: 'templateId', required: true },
+  { displayName: '模板名称', fieldName: 'templateName', required: false },
+  { displayName: '模板版本', fieldName: 'templateVersion', required: true, description: '模板版本号，用于兼容性校验' },
+  { displayName: '巡检员ID', fieldName: 'inspectorId', required: false },
+  { displayName: '巡检员', fieldName: 'inspectorName', required: false },
+  { displayName: '状态', fieldName: 'status', required: true, description: 'draft/submitted/synced/conflict/withdrawn/resumed' },
+  { displayName: '异常等级', fieldName: 'anomalyLevel', required: false, description: 'none/low/medium/high/critical' },
+  { displayName: '提交次数', fieldName: 'submissionCount', required: false },
+  { displayName: '撤回次数', fieldName: 'withdrawCount', required: false },
+  { displayName: '照片数', fieldName: 'photoCount', required: false },
+  { displayName: '巡检内容', fieldName: 'values', required: true, description: 'JSON 字符串格式的巡检字段值' },
+  { displayName: '照片列表', fieldName: 'photos', required: false, description: 'JSON 字符串格式的照片元数据' },
+  { displayName: '创建时间', fieldName: 'createdAt', required: false },
+  { displayName: '更新时间', fieldName: 'updatedAt', required: false },
+  { displayName: '提交时间', fieldName: 'submittedAt', required: false },
+  { displayName: '首次提交时间', fieldName: 'firstSubmittedAt', required: false },
+  { displayName: '最后撤回时间', fieldName: 'lastWithdrawnAt', required: false },
+  { displayName: '同步时间', fieldName: 'syncedAt', required: false },
+  { displayName: '来源设备', fieldName: 'originDeviceId', required: false },
+  { displayName: '是否有冲突', fieldName: 'hasConflict', required: false },
+  { displayName: '冲突处理结论', fieldName: 'conflictResolution', required: false },
+  { displayName: '凭据编号', fieldName: 'receiptNo', required: false },
+  { displayName: '来源设备信息', fieldName: 'sourceDevice', required: false },
+  { displayName: '导出次数', fieldName: 'exportCount', required: false },
+];
+
+export const revertModuleConfig: RevertModuleConfigType = {
+  sectionTitle: '回灌与追踪',
+  description: '从 CSV/JSON 文件回灌巡检记录，支持冲突检测、撤销回滚、操作追踪',
+  exportTemplateButton: '下载导入模板',
+  importButton: '选择文件回灌',
+  previewButton: '预览差异',
+  confirmButton: '确认导入',
+  revertButton: '撤销本次导入',
+  revertConfirmTitle: '确认撤销本次导入？',
+  revertConfirmMessage: '撤销将删除本次导入创建的所有记录，恢复导入前状态。此操作不可恢复。',
+  historyTitle: '回灌历史',
+  emptyHistoryText: '暂无回灌记录',
+  draftRecoveryTitle: '检测到未完成的回灌草稿',
+  draftRecoveryMessage: '上次回灌操作未完成，是否恢复草稿继续处理？',
+  staleDraftMessage: '该回灌草稿基于旧版配置，模板或设备列表已变更，建议重新导入',
+  staleDraftActionLabel: '放弃旧草稿重新导入',
+  staleDraftDismissLabel: '继续使用旧草稿',
+  duplicateBlockTitle: '同设备同日重复提交拦截',
+  duplicateBlockMessage: '检测到 {count} 条记录与当前设备今日已提交记录重复，已自动跳过',
+  columnMappingTitle: '列名映射说明',
+  resultPreviewTitle: '导入结果预览',
+  maxHistoryCount: 50,
+  maxDraftAgeHours: 24,
+  enableRevert: true,
+  enableDraftRecovery: true,
+  enableDuplicateBlocking: true,
+  enableConfigFingerprint: true,
+};
+
+export const revertFeatureFlags = {
+  enableRevertModule: true,
+  enableRevertHistory: true,
+  enableRevertPreview: true,
+  enableColumnMappingDisplay: true,
+  enableAutoExportTemplate: true,
+};
+
 export const businessTips: Record<string, BusinessTip> = {
   duplicateSubmit: {
     title: '重复提交提醒',
@@ -603,6 +703,11 @@ export const appConfig = {
   staleDraft: staleDraftConfig,
   importMeta: importConfig,
   operationLog: operationLogConfig,
+  revert: {
+    config: revertModuleConfig,
+    columnMappings: csvColumnMappings,
+    featureFlags: revertFeatureFlags,
+  },
 };
 
 export type AppConfig = typeof appConfig;
