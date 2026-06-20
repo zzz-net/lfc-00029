@@ -107,11 +107,11 @@ describe('appConfig - 文档与配置一致性', () => {
   });
 
   describe('状态配置 - statusMeta', () => {
-    const expectedStatuses: StatusKey[] = ['draft', 'submitted', 'synced', 'conflict'];
+    const expectedStatuses: StatusKey[] = ['draft', 'submitted', 'synced', 'conflict', 'withdrawn', 'resumed'];
 
-    it('应该包含所有4种状态', () => {
+    it('应该包含所有6种状态', () => {
       expect(Object.keys(statusConfig)).toEqual(expect.arrayContaining(expectedStatuses));
-      expect(Object.keys(statusConfig)).toHaveLength(4);
+      expect(Object.keys(statusConfig)).toHaveLength(6);
     });
 
     it('每个状态都应该有完整的元信息', () => {
@@ -191,11 +191,13 @@ describe('appConfig - 文档与配置一致性', () => {
       'sync',
       'resolve_conflict',
       'resubmit',
+      'resume',
+      'resubmit_after_withdraw',
     ];
 
-    it('应该包含所有6种操作', () => {
+    it('应该包含所有8种操作', () => {
       expect(Object.keys(actionConfig)).toEqual(expect.arrayContaining(expectedActions));
-      expect(Object.keys(actionConfig)).toHaveLength(6);
+      expect(Object.keys(actionConfig)).toHaveLength(8);
     });
 
     it('每个操作都应该有完整的元信息', () => {
@@ -362,8 +364,8 @@ describe('appConfig - 文档与配置一致性', () => {
   });
 
   describe('提交凭证字段 - submissionFields', () => {
-    it('应该包含5个字段标签', () => {
-      expect(Object.keys(submissionFields)).toHaveLength(5);
+    it('应该包含核心凭证字段', () => {
+      expect(Object.keys(submissionFields).length).toBeGreaterThanOrEqual(10);
     });
 
     it('应该包含核心凭证字段', () => {

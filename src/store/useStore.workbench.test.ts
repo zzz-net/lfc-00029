@@ -522,3 +522,133 @@ describe('useStore - 提交工作台：会话恢复与凭据查询', () => {
     expect(useStore.getState().recoveredSession).toBeDefined();
   });
 });
+
+describe('useStore - 提交工作台：旧草稿检测与迁移', () => {
+  const updatedTemplate: Template = { ...mockTemplate, version: 5, fields: [...mockTemplate.fields, { id: 'f_new', key: 'newField', label: '新字段', type: 'text', required: false }] };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useStore.setState({
+      templates: [updatedTemplate],
+      devices: [mockDevice],
+      inspections: [
+        makeDraft({ id: 'rec_stale', status: 'draft', templateVersion: 2 }),
+        makeDraft({ id: 'rec_fresh', status: 'draft', templateVersion: 5 }),
+        makeDraft({ id: 'rec_submitted', status: 'submitted', templateVersion: 2, submissionCount: 1 }),
+      ],
+      conflicts: [],
+      logs: [],
+      syncQueue: [],
+      statusHistory: [],
+      submissionSnapshots: [],
+      submissionReceipts: [],
+      auditLogs: [],
+      sessionStates: [],
+      recordMetaList: [],
+      offlineMode: true,
+      currentDeviceId: 'dev_local_test',
+    } as any);
+  });
+
+  it('getStaleDrafts 应检测出版本落后的草稿', () => {
+    const stale = useStore.getState().getStaleDrafts();
+    expect(stale).toHaveLength(1);
+    expect(stale[0].recordId).toBe('rec_stale');
+    expect(stale[0].recordTemplateVersion).toBe(2);
+    expect(stale[0].latestTemplateVersion).toBe(5);
+  });
+
+  it('migrateStaleDraft 应将草稿升级到最新模板版本', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.addStatusChangeEvent).mockResolvedValue();
+    vi.mocked(indexedDb.putRecordMeta).mockResolvedValue();
+
+    const result = await useStore.getState().migrateStaleDraft('rec_stale');
+
+    expect(result).toBeDefined();
+    expect(result!.templateVersion).toBe(5);
+    expect(result!.status).toBe('draft');
+    expect(indexedDb.addStatusChangeEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'save_draft' })
+    );
+
+    const updated = useStore.getState().inspections.find(r => r.id === 'rec_stale');
+    expect(updated?.templateVersion).toBe(5);
+  });
+
+  it('migrateStaleDraft 对不存在的记录应抛出错误', async () => {
+    await expect(useStore.getState().migrateStaleDraft('rec_nonexistent')).rejects.toThrow();
+  });
+});
+
+describe('useStore - 提交工作台：导入记录', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useStore.setState({
+      templates: [mockTemplate],
+      devices: [mockDevice],
+      inspections: [makeDraft({ id: 'rec_existing' })],
+      conflicts: [],
+      logs: [],
+      syncQueue: [],
+      statusHistory: [],
+      submissionSnapshots: [],
+      submissionReceipts: [],
+      auditLogs: [],
+      sessionStates: [],
+      recordMetaList: [],
+      offlineMode: true,
+      currentDeviceId: 'dev_local_test',
+    } as any);
+  });
+
+  it('importRecords JSON 格式应导入合法记录', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.addAuditLog).mockResolvedValue();
+
+    const data = [{
+      id: 'rec_new', deviceId: 'dev_123', templateId: 'tpl_123',
+      date: '2024-06-20', values: { a: 1 }, status: 'draft',
+    }];
+
+    const result = await useStore.getState().importRecords(data, 'json');
+
+    expect(result.successCount).toBe(1);
+    expect(result.failCount).toBe(0);
+    expect(result.skippedCount).toBe(0);
+    expect(result.importedIds).toContain('rec_new');
+    expect(indexedDb.putInspection).toHaveBeenCalled();
+  });
+
+  it('importRecords 重复 ID 应被跳过', async () => {
+    const data = [{
+      id: 'rec_existing', deviceId: 'dev_123', templateId: 'tpl_123', date: '2024-06-20',
+    }];
+
+    const result = await useStore.getState().importRecords(data, 'json');
+
+    expect(result.successCount).toBe(0);
+    expect(result.skippedCount).toBe(1);
+  });
+
+  it('importRecords 非法数据应计入错误', async () => {
+    const data = [{ bad: 'data' }, { id: 'rec_new', deviceId: 'dev_123', templateId: 'tpl_123', date: '2024-06-20' }];
+
+    const result = await useStore.getState().importRecords(data, 'json');
+
+    expect(result.failCount).toBeGreaterThan(0);
+    expect(result.successCount).toBe(1);
+  });
+
+  it('importRecords CSV 格式应通过 parseCsvToRecords 解析后导入', async () => {
+    vi.mocked(indexedDb.putInspection).mockResolvedValue();
+    vi.mocked(indexedDb.addAuditLog).mockResolvedValue();
+
+    const csvText = 'id,deviceId,templateId,date,status\nrec_csv_new,dev_123,tpl_123,2024-06-20,draft';
+
+    const result = await useStore.getState().importRecords([csvText], 'csv');
+
+    expect(result.successCount).toBe(1);
+    expect(result.importedIds).toContain('rec_csv_new');
+  });
+});

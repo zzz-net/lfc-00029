@@ -9,9 +9,13 @@ import type {
   ValidationWarningItem,
   DuplicateCheckResult,
   TimelineEvent,
+  StaleDraftInfo,
+  ImportResult,
+  ImportErrorItem,
+  ButtonActionState,
 } from '@/types';
 import { validateRecord, type ValidationError } from '@/utils/validation';
-import { statusConfig, actionConfig, validationMessages, featureFlags } from '@/config/appConfig';
+import { statusConfig, actionConfig, validationMessages, featureFlags, buttonDisableReasons } from '@/config/appConfig';
 
 export const STATUS_TRANSITIONS: Record<RecordStatus, RecordStatus[]> = {
   draft: ['submitted', 'withdrawn'],
@@ -284,4 +288,226 @@ export function getDeviceFingerprint(): string {
     hash |= 0;
   }
   return 'dev_' + Math.abs(hash).toString(36);
+}
+
+export function detectStaleDrafts(
+  records: InspectionRecord[],
+  templates: Template[]
+): StaleDraftInfo[] {
+  const result: StaleDraftInfo[] = [];
+  for (const record of records) {
+    if (record.status !== 'draft' && record.status !== 'resumed' && record.status !== 'withdrawn') continue;
+    const template = templates.find(t => t.id === record.templateId);
+    if (!template) continue;
+    if (record.templateVersion < template.version) {
+      result.push({
+        recordId: record.id,
+        recordTemplateVersion: record.templateVersion,
+        latestTemplateVersion: template.version,
+        templateId: template.id,
+        templateName: template.name,
+      });
+    }
+  }
+  return result;
+}
+
+export function validateImportData(
+  data: any[],
+  existingRecords: InspectionRecord[]
+): { valid: InspectionRecord[]; skipped: InspectionRecord[]; errors: ImportErrorItem[] } {
+  const valid: InspectionRecord[] = [];
+  const skipped: InspectionRecord[] = [];
+  const errors: ImportErrorItem[] = [];
+  const existingIds = new Set(existingRecords.map(r => r.id));
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    if (!row || typeof row !== 'object') {
+      errors.push({ row: i + 1, reason: '数据格式不正确' });
+      continue;
+    }
+    if (!row.id || typeof row.id !== 'string') {
+      errors.push({ row: i + 1, id: row.id, reason: '缺少记录ID或格式错误' });
+      continue;
+    }
+    if (!row.deviceId || !row.templateId || !row.date) {
+      errors.push({ row: i + 1, id: row.id, reason: '缺少必要字段（deviceId/templateId/date）' });
+      continue;
+    }
+    if (existingIds.has(row.id)) {
+      skipped.push(row as InspectionRecord);
+      continue;
+    }
+    const status: RecordStatus = row.status || 'draft';
+    const validStatuses: RecordStatus[] = ['draft', 'submitted', 'synced', 'conflict', 'withdrawn', 'resumed'];
+    if (!validStatuses.includes(status)) {
+      errors.push({ row: i + 1, id: row.id, reason: `无效的状态值: ${status}` });
+      continue;
+    }
+    const record: InspectionRecord = {
+      id: row.id,
+      deviceId: row.deviceId,
+      templateId: row.templateId,
+      templateVersion: row.templateVersion || 1,
+      inspectorId: row.inspectorId || 'imported',
+      inspectorName: row.inspectorName || '导入',
+      date: row.date,
+      values: row.values || {},
+      photos: row.photos || [],
+      anomalyLevel: row.anomalyLevel || 'none',
+      status,
+      createdAt: row.createdAt || new Date().toISOString(),
+      updatedAt: row.updatedAt || new Date().toISOString(),
+      syncedAt: row.syncedAt,
+      conflictId: row.conflictId,
+      submittedAt: row.submittedAt,
+      firstSubmittedAt: row.firstSubmittedAt,
+      submissionCount: row.submissionCount || 0,
+      withdrawCount: row.withdrawCount || 0,
+      lastWithdrawnAt: row.lastWithdrawnAt,
+      originDeviceId: row.originDeviceId || 'imported',
+    };
+    valid.push(record);
+  }
+
+  return { valid, skipped, errors };
+}
+
+export function parseCsvToRecords(csvText: string): any[] {
+  const lines = csvText.split('\n').filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = parseCsvLine(lines[0]);
+  const records: any[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseCsvLine(lines[i]);
+    if (values.length !== headers.length) continue;
+    const obj: Record<string, any> = {};
+    for (let j = 0; j < headers.length; j++) {
+      obj[headers[j]] = values[j];
+    }
+    try {
+      if (obj.values) obj.values = JSON.parse(obj.values);
+      if (obj.photos) obj.photos = JSON.parse(obj.photos);
+      if (obj.templateVersion) obj.templateVersion = Number(obj.templateVersion);
+      if (obj.submissionCount) obj.submissionCount = Number(obj.submissionCount);
+      if (obj.withdrawCount) obj.withdrawCount = Number(obj.withdrawCount);
+    } catch {
+      // keep as-is
+    }
+    records.push(obj);
+  }
+  return records;
+}
+
+function parseCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (i + 1 < line.length && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        result.push(current);
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+  }
+  result.push(current);
+  return result;
+}
+
+export function computeButtonActions(
+  record: InspectionRecord,
+  templates: Template[],
+  existingRecords: InspectionRecord[],
+  hasConflict: boolean
+): ButtonActionState[] {
+  const status = record.status;
+  const template = templates.find(t => t.id === record.templateId);
+  const isVersionMismatch = template ? record.templateVersion < template.version : false;
+  const missingFields = template ? getMissingRequiredFields(record.values, template.fields) : [];
+  const dupCheck = checkDuplicateSubmission(record.deviceId, record.date, existingRecords, record.id);
+  const reasons = buttonDisableReasons;
+
+  const actions: ButtonActionState[] = [];
+
+  actions.push({
+    key: 'edit',
+    label: '编辑',
+    disabled: status !== 'draft' && status !== 'resumed' && status !== 'withdrawn',
+    reason: status !== 'draft' && status !== 'resumed' && status !== 'withdrawn' ? reasons.edit_wrong_status.message : '',
+    variant: 'ghost',
+  });
+
+  actions.push({
+    key: 'submit',
+    label: actionConfig.submit.shortLabel,
+    disabled: (() => {
+      if (status !== 'draft' && status !== 'resumed' && status !== 'withdrawn') return true;
+      if (isVersionMismatch) return true;
+      if (missingFields.length > 0) return true;
+      if (hasConflict) return true;
+      if (dupCheck.isDuplicate && (status === 'draft' || status === 'resumed')) return true;
+      return false;
+    })(),
+    reason: (() => {
+      if (status !== 'draft' && status !== 'resumed' && status !== 'withdrawn') return reasons.edit_wrong_status.message;
+      if (isVersionMismatch) return reasons.submit_version_mismatch.message;
+      if (missingFields.length > 0) return reasons.submit_required_missing.message;
+      if (hasConflict) return reasons.submit_conflict_exists.message;
+      if (dupCheck.isDuplicate) return reasons.submit_duplicate.message;
+      return '';
+    })(),
+    variant: 'primary',
+  });
+
+  actions.push({
+    key: 'withdraw',
+    label: actionConfig.withdraw.shortLabel,
+    disabled: status !== 'submitted',
+    reason: status !== 'submitted' ? reasons.withdraw_wrong_status.message : '',
+    variant: 'warning',
+  });
+
+  actions.push({
+    key: 'resubmit',
+    label: actionConfig.resubmit_after_withdraw.shortLabel,
+    disabled: (() => {
+      if (status !== 'withdrawn') return true;
+      if (isVersionMismatch) return true;
+      return false;
+    })(),
+    reason: (() => {
+      if (status !== 'withdrawn') return reasons.resubmit_wrong_status.message;
+      if (isVersionMismatch) return reasons.submit_version_mismatch.message;
+      return '';
+    })(),
+    variant: 'primary',
+  });
+
+  actions.push({
+    key: 'resume',
+    label: actionConfig.resume.shortLabel,
+    disabled: status !== 'draft' && status !== 'withdrawn',
+    reason: status !== 'draft' && status !== 'withdrawn' ? reasons.resume_wrong_status.message : '',
+    variant: 'info',
+  });
+
+  return actions;
 }

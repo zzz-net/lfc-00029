@@ -1,16 +1,16 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileJson, FileSpreadsheet, Calendar, Filter, Download, AlertCircle, CheckCircle, Send, RotateCcw, RefreshCcw, ClipboardCheck, Info, ChevronDown } from 'lucide-react';
+import { FileJson, FileSpreadsheet, Calendar, Filter, Download, Upload, AlertCircle, CheckCircle, Send, RotateCcw, RefreshCcw, ClipboardCheck, Info, ChevronDown, Plus, AlertTriangle, ListChecks } from 'lucide-react';
 import TopBar from '@/components/TopBar';
 import BottomNav from '@/components/BottomNav';
 import TodoList from '@/components/TodoList';
 import RecordDetailSidebar from '@/components/RecordDetailSidebar';
+import CreateSubmissionModal from '@/components/CreateSubmissionModal';
 import { useStore } from '@/store/useStore';
-import { appConfig, workbenchSections, statusConfig, featureFlags, validationMessages } from '@/config/appConfig';
-import { getMissingRequiredFields, buildFullValidation } from '@/lib/submissionWorkbench';
-import { getAnomalyLevelLabel, getAnomalyLevelColor } from '@/utils/anomaly';
+import { appConfig, workbenchSections, statusConfig, featureFlags, validationMessages, staleDraftConfig, importConfig, operationLogConfig } from '@/config/appConfig';
+import { getMissingRequiredFields } from '@/lib/submissionWorkbench';
 import { getTodayString } from '@/utils/id';
-import type { InspectionRecord, ExportFilter, RecordStatus } from '@/types';
+import type { InspectionRecord, ExportFilter, RecordStatus, StaleDraftInfo } from '@/types';
 
 export default function SubmissionWorkbench() {
   const navigate = useNavigate();
@@ -30,9 +30,14 @@ export default function SubmissionWorkbench() {
     exportRecords,
     markRecordExported,
     currentDeviceId,
+    getStaleDrafts,
+    migrateStaleDraft,
+    importRecords,
+    logs,
   } = useStore();
 
   const [selectedRecord, setSelectedRecord] = useState<InspectionRecord | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showDevicePicker, setShowDevicePicker] = useState(false);
   const [showStatusPicker, setShowStatusPicker] = useState(false);
@@ -41,14 +46,28 @@ export default function SubmissionWorkbench() {
   const [filterDeviceId, setFilterDeviceId] = useState('');
   const [filterStatus, setFilterStatus] = useState<RecordStatus | ''>('');
   const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
   const [showValidationErrors, setShowValidationErrors] = useState<string[]>([]);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [dismissedStaleDrafts, setDismissedStaleDrafts] = useState<Set<string>>(new Set());
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = useCallback((type: 'success' | 'error' | 'warning', message: string) => {
     setToast({ type, message });
     setTimeout(() => setToast(null), 3000);
   }, []);
+
+  const staleDrafts = useMemo(() => {
+    const all = getStaleDrafts();
+    return all.filter(d => !dismissedStaleDrafts.has(d.recordId));
+  }, [getStaleDrafts, dismissedStaleDrafts, inspections, templates]);
+
+  const recentLogs = useMemo(() => {
+    return logs
+      .filter(l => l.action.includes('提交') || l.action.includes('撤回') || l.action.includes('迁移') || l.action.includes('导入'))
+      .slice(0, operationLogConfig.maxDisplayCount);
+  }, [logs]);
 
   const exportFilter: ExportFilter = useMemo(() => ({
     startDate: filterStartDate || undefined,
@@ -66,8 +85,6 @@ export default function SubmissionWorkbench() {
       return true;
     }).length;
   }, [inspections, exportFilter, filterStatus, filterDeviceId, filterStartDate, filterEndDate]);
-
-  const dates = useMemo(() => [...new Set(inspections.map(r => r.date))].sort().reverse(), [inspections]);
 
   const runValidation = (recordId: string, action: 'submit' | 'withdraw' | 'resubmit' | 'save') => {
     const record = inspections.find(r => r.id === recordId);
@@ -164,6 +181,22 @@ export default function SubmissionWorkbench() {
     }
   }, [inspections, navigate]);
 
+  const handleMigrateStale = useCallback(async (recordId: string) => {
+    try {
+      const updated = await migrateStaleDraft(recordId);
+      showToast('success', staleDraftConfig.migrateSuccessMessage);
+      if (selectedRecord?.id === recordId) {
+        setSelectedRecord(updated);
+      }
+    } catch (e) {
+      showToast('error', (e as Error).message);
+    }
+  }, [migrateStaleDraft, showToast, selectedRecord]);
+
+  const handleDismissStale = useCallback((recordId: string) => {
+    setDismissedStaleDrafts(prev => new Set([...prev, recordId]));
+  }, []);
+
   const handleExport = useCallback(async (format: 'json' | 'csv') => {
     if (filteredCount === 0) {
       showToast('warning', '没有可导出的记录');
@@ -172,11 +205,9 @@ export default function SubmissionWorkbench() {
     setExporting(true);
     try {
       const data = await exportRecords(exportFilter, format);
-
       for (const row of data) {
         await markRecordExported(row.id);
       }
-
       if (format === 'json') {
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -216,33 +247,142 @@ export default function SubmissionWorkbench() {
     }
   }, [exportFilter, filteredCount, exportRecords, markRecordExported, showToast]);
 
+  const handleImport = useCallback(async (format: 'json' | 'csv') => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = format === 'json' ? '.json' : '.csv';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      if (file.size > importConfig.maxFileSize) {
+        showToast('error', importConfig.oversizeMessage);
+        return;
+      }
+      setImporting(true);
+      try {
+        const text = await file.text();
+        let data: any[];
+        if (format === 'json') {
+          data = JSON.parse(text);
+          if (!Array.isArray(data)) {
+            showToast('error', importConfig.invalidFormatMessage);
+            return;
+          }
+        } else {
+          data = [text];
+        }
+        const result = await importRecords(data, format);
+        if (result.successCount > 0 && result.failCount === 0 && result.skippedCount === 0) {
+          showToast('success', importConfig.successMessage.replace('{count}', String(result.successCount)));
+        } else if (result.successCount > 0) {
+          showToast('warning', importConfig.partialSuccessMessage
+            .replace('{success}', String(result.successCount))
+            .replace('{skipped}', String(result.skippedCount))
+            .replace('{fail}', String(result.failCount)));
+        } else {
+          showToast('error', importConfig.failMessage.replace('{reason}', result.errors[0]?.reason || '未知错误'));
+        }
+      } catch (e) {
+        showToast('error', importConfig.invalidFormatMessage);
+      } finally {
+        setImporting(false);
+      }
+    };
+    input.click();
+  }, [importRecords, showToast]);
+
+  const handleCreated = useCallback((recordId: string) => {
+    setShowCreateModal(false);
+    const record = useStore.getState().inspections.find(r => r.id === recordId);
+    if (record) {
+      setSelectedRecord(record);
+    }
+    showToast('success', '草稿已创建');
+  }, [showToast]);
+
   return (
     <div className="min-h-screen bg-surface-100 pb-24">
       <TopBar title={appConfig.pages.submissionWorkbench.title} />
 
-      {recoveredSession && featureFlags.enableAutoResume && (
-        <div className="mx-4 mt-3 bg-info-50 border border-info-200 rounded-xl p-3 flex items-start gap-2">
-          <RefreshCcw size={16} className="text-info-600 mt-0.5 flex-shrink-0" />
-          <div className="flex-1 text-sm">
-            <p className="text-info-800 font-medium">检测到上次未完成会话</p>
-            <p className="text-info-600 text-xs mt-0.5">
-              已恢复 {inspections.filter(r => r.status === 'draft' || r.status === 'resumed').length} 条草稿，可继续编辑
-            </p>
-          </div>
+      <div className="p-4 space-y-4 max-w-md mx-auto">
+        <div className="flex gap-2">
           <button
-            onClick={clearRecoveredSession}
-            className="text-xs text-info-600 hover:text-info-700 px-2 py-1 rounded-lg hover:bg-info-100"
+            onClick={() => setShowCreateModal(true)}
+            className="flex-1 flex items-center justify-center gap-1.5 py-3 bg-primary-600 text-white rounded-2xl text-sm font-medium hover:bg-primary-700 transition-colors shadow-sm"
           >
-            知道了
+            <Plus size={16} />
+            新建提交单
           </button>
         </div>
-      )}
 
-      <div className="p-4 space-y-4 max-w-md mx-auto">
+        {recoveredSession && featureFlags.enableAutoResume && (
+          <div className="bg-info-50 border border-info-200 rounded-xl p-3 flex items-start gap-2">
+            <RefreshCcw size={16} className="text-info-600 mt-0.5 flex-shrink-0" />
+            <div className="flex-1 text-sm">
+              <p className="text-info-800 font-medium">检测到上次未完成会话</p>
+              <p className="text-info-600 text-xs mt-0.5">
+                已恢复 {inspections.filter(r => r.status === 'draft' || r.status === 'resumed').length} 条草稿，可继续编辑
+              </p>
+            </div>
+            <button
+              onClick={clearRecoveredSession}
+              className="text-xs text-info-600 hover:text-info-700 px-2 py-1 rounded-lg hover:bg-info-100"
+            >
+              知道了
+            </button>
+          </div>
+        )}
+
+        {staleDrafts.length > 0 && (
+          <div className="bg-warning-50 border border-warning-200 rounded-xl p-3">
+            <div className="flex items-start gap-2 mb-2">
+              <AlertTriangle size={16} className="text-warning-600 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-warning-800">{staleDraftConfig.bannerTitle}</p>
+                <p className="text-xs text-warning-600 mt-0.5">{staleDraftConfig.bannerMessage}</p>
+              </div>
+            </div>
+            <div className="space-y-2 mt-2">
+              {staleDrafts.map(stale => {
+                const record = inspections.find(r => r.id === stale.recordId);
+                const device = record ? devices.find(d => d.id === record.deviceId) : null;
+                return (
+                  <div key={stale.recordId} className="flex items-center justify-between bg-white rounded-lg p-2.5 border border-warning-200">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium text-primary-800 truncate">
+                        {device?.name || stale.recordId}
+                      </p>
+                      <p className="text-[10px] text-warning-600 mt-0.5">
+                        {staleDraftConfig.versionMismatchDetail
+                          .replace('{old}', String(stale.recordTemplateVersion))
+                          .replace('{latest}', String(stale.latestTemplateVersion))}
+                      </p>
+                    </div>
+                    <div className="flex gap-1.5 ml-2 flex-shrink-0">
+                      <button
+                        onClick={() => handleMigrateStale(stale.recordId)}
+                        className="px-2.5 py-1.5 bg-primary-600 text-white rounded-lg text-[11px] font-medium hover:bg-primary-700 transition-colors"
+                      >
+                        {staleDraftConfig.actionLabel}
+                      </button>
+                      <button
+                        onClick={() => handleDismissStale(stale.recordId)}
+                        className="px-2.5 py-1.5 bg-surface-100 text-primary-600 rounded-lg text-[11px] font-medium hover:bg-surface-200 transition-colors"
+                      >
+                        {staleDraftConfig.dismissLabel}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="bg-white rounded-2xl shadow-card p-4">
           <h2 className="text-sm font-bold text-primary-800 mb-3 flex items-center gap-2">
             <Filter size={16} className="text-primary-500" />
-            筛选与导出
+            筛选与导入导出
             <span className="text-xs font-normal text-primary-400 ml-auto">
               共 {filteredCount} 条
             </span>
@@ -321,14 +461,14 @@ export default function SubmissionWorkbench() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2 mb-2">
             <button
               onClick={() => handleExport('json')}
               disabled={exporting || filteredCount === 0}
               className="flex items-center justify-center gap-1.5 py-2.5 bg-primary-50 text-primary-700 rounded-xl text-xs font-medium hover:bg-primary-100 disabled:opacity-50 transition-colors"
             >
               <FileJson size={14} />
-              导出 JSON
+              {importConfig.jsonLabel.replace('导入', '导出')}
             </button>
             <button
               onClick={() => handleExport('csv')}
@@ -336,7 +476,25 @@ export default function SubmissionWorkbench() {
               className="flex items-center justify-center gap-1.5 py-2.5 bg-success-50 text-success-700 rounded-xl text-xs font-medium hover:bg-success-100 disabled:opacity-50 transition-colors"
             >
               <FileSpreadsheet size={14} />
-              导出 CSV
+              {importConfig.csvLabel.replace('导入', '导出')}
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => handleImport('json')}
+              disabled={importing}
+              className="flex items-center justify-center gap-1.5 py-2.5 bg-accent-50 text-accent-700 rounded-xl text-xs font-medium hover:bg-accent-100 disabled:opacity-50 transition-colors"
+            >
+              <Upload size={14} />
+              {importConfig.jsonLabel}
+            </button>
+            <button
+              onClick={() => handleImport('csv')}
+              disabled={importing}
+              className="flex items-center justify-center gap-1.5 py-2.5 bg-warning-50 text-warning-700 rounded-xl text-xs font-medium hover:bg-warning-100 disabled:opacity-50 transition-colors"
+            >
+              <Upload size={14} />
+              {importConfig.csvLabel}
             </button>
           </div>
         </div>
@@ -378,6 +536,30 @@ export default function SubmissionWorkbench() {
           onSelect={setSelectedRecord}
         />
 
+        {recentLogs.length > 0 && (
+          <div className="bg-white rounded-2xl shadow-card p-4">
+            <h3 className="text-sm font-bold text-primary-800 mb-3 flex items-center gap-2">
+              <ListChecks size={16} className="text-primary-500" />
+              {operationLogConfig.sectionTitle}
+            </h3>
+            <div className="space-y-2">
+              {recentLogs.map(log => (
+                <div key={log.id} className="flex items-start gap-2 py-1.5 border-b border-surface-50 last:border-b-0">
+                  <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${
+                    log.result === 'success' ? 'bg-success-500' :
+                    log.result === 'conflict' ? 'bg-warning-500' :
+                    'bg-critical-500'
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-primary-700 truncate">{log.action} - {log.detail}</p>
+                    <p className="text-[10px] text-primary-400 mt-0.5">{log.userName} · {new Date(log.timestamp).toLocaleString()}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="bg-white rounded-2xl shadow-card p-4">
           <h3 className="text-sm font-bold text-primary-800 mb-3 flex items-center gap-2">
             <Info size={16} className="text-primary-500" />
@@ -398,7 +580,11 @@ export default function SubmissionWorkbench() {
             </li>
             <li className="flex items-start gap-2">
               <Download size={14} className="text-primary-400 mt-0.5 flex-shrink-0" />
-              <span>支持按时间段、设备、状态批量导出 JSON/CSV</span>
+              <span>支持按时间段、设备、状态批量导出和导入 JSON/CSV</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <AlertTriangle size={14} className="text-primary-400 mt-0.5 flex-shrink-0" />
+              <span>模板版本更新后旧草稿可一键迁移，新字段自动补默认值</span>
             </li>
           </ul>
         </div>
@@ -412,6 +598,12 @@ export default function SubmissionWorkbench() {
         onResume={handleResume}
         onResubmit={handleResubmit}
         onEdit={handleEdit}
+      />
+
+      <CreateSubmissionModal
+        open={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onCreated={handleCreated}
       />
 
       {toast && (

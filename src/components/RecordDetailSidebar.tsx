@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
-import { X, Clock, User, Cpu, FileCheck, AlertCircle, Download, History, ShieldCheck, Camera, Send, RotateCcw, RefreshCcw } from 'lucide-react';
+import { X, Clock, User, Cpu, FileCheck, AlertCircle, Download, History, ShieldCheck, Camera, Send, RotateCcw, RefreshCcw, ListChecks } from 'lucide-react';
 import type { InspectionRecord, SubmissionReceipt, AuditLogEntry } from '@/types';
 import { useStore } from '@/store/useStore';
-import { statusConfig, appConfig, submissionFields } from '@/config/appConfig';
+import { statusConfig, appConfig, submissionFields, operationLogConfig } from '@/config/appConfig';
 import { getAnomalyLevelColor, getAnomalyLevelLabel } from '@/utils/anomaly';
+import { useWorkbenchActions } from '@/hooks/useWorkbenchActions';
 import Timeline from './Timeline';
 
 interface Props {
@@ -52,7 +53,8 @@ function Section({ title, icon: Icon, children, defaultOpen = true }: { title: s
 }
 
 export default function RecordDetailSidebar({ record, onClose, onSubmit, onWithdraw, onResume, onResubmit, onEdit }: Props) {
-  const { devices, templates, getSubmissionReceipts, getAuditLogs, getTimelineEvents, getLatestSnapshot, getRecordMeta } = useStore();
+  const { devices, templates, getSubmissionReceipts, getAuditLogs, getTimelineEvents, getLatestSnapshot, getRecordMeta, logs } = useStore();
+  const buttonActions = useWorkbenchActions(record);
 
   const device = useMemo(() => record ? devices.find(d => d.id === record.deviceId) : undefined, [record, devices]);
   const template = useMemo(() => record ? templates.find(t => t.id === record.templateId) : undefined, [record, templates]);
@@ -61,6 +63,7 @@ export default function RecordDetailSidebar({ record, onClose, onSubmit, onWithd
   const timeline = useMemo(() => record ? getTimelineEvents(record.id) : [], [record, getTimelineEvents]);
   const latestSnapshot = useMemo(() => record ? getLatestSnapshot(record.id) : undefined, [record, getLatestSnapshot]);
   const meta = useMemo(() => record ? getRecordMeta(record.id) : undefined, [record, getRecordMeta]);
+  const operationLogs = useMemo(() => record ? logs.filter(l => l.target === record.id || l.target === record.deviceId).slice(0, operationLogConfig.maxDisplayCount) : [], [record, logs]);
 
   if (!record) {
     return (
@@ -186,6 +189,27 @@ export default function RecordDetailSidebar({ record, onClose, onSubmit, onWithd
               <Timeline events={timeline} />
             </Section>
 
+            {operationLogs.length > 0 && (
+              <Section title={operationLogConfig.sectionTitle} icon={ListChecks} defaultOpen={false}>
+                {operationLogs.map(log => (
+                  <div key={log.id} className="py-2 border-b border-surface-100 last:border-b-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-primary-700 truncate max-w-[180px]">{log.action}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        log.result === 'success' ? 'bg-success-50 text-success-700' :
+                        log.result === 'conflict' ? 'bg-warning-50 text-warning-700' :
+                        'bg-critical-50 text-critical-700'
+                      }`}>
+                        {log.result === 'success' ? '成功' : log.result === 'conflict' ? '冲突' : '失败'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-primary-500 truncate">{log.detail}</p>
+                    <p className="text-[10px] text-primary-400 mt-0.5">{formatTs(log.timestamp)} · {log.userName}</p>
+                  </div>
+                ))}
+              </Section>
+            )}
+
             <Section title="时间戳" icon={Clock} defaultOpen={false}>
               <InfoRow label="创建时间" value={formatTs(record.createdAt)} />
               <InfoRow label="最后更新" value={formatTs(record.updatedAt)} />
@@ -201,51 +225,38 @@ export default function RecordDetailSidebar({ record, onClose, onSubmit, onWithd
         </div>
 
         <div className="border-t border-surface-200 p-3 space-y-2 bg-surface-50 safe-bottom">
-          {(record.status === 'draft' || record.status === 'resumed') && (
-            <div className="grid grid-cols-2 gap-2">
+          {buttonActions.filter(a => !a.disabled || a.key === 'submit' || a.key === 'withdraw' || a.key === 'resubmit' || a.key === 'edit' || a.key === 'resume').map(action => (
+            <div key={action.key}>
               <button
-                onClick={() => onEdit?.(record.id)}
-                className="flex items-center justify-center gap-1.5 py-2.5 bg-surface-100 text-primary-700 rounded-xl text-sm font-medium hover:bg-surface-200 transition-colors"
+                disabled={action.disabled}
+                onClick={() => {
+                  if (action.key === 'edit') onEdit?.(record.id);
+                  else if (action.key === 'submit') onSubmit?.(record.id);
+                  else if (action.key === 'withdraw') onWithdraw?.(record.id);
+                  else if (action.key === 'resubmit') onResubmit?.(record.id);
+                  else if (action.key === 'resume') onResume?.(record.id);
+                }}
+                className={`w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+                  action.disabled ? 'bg-surface-100 text-surface-400 cursor-not-allowed' :
+                  action.variant === 'primary' ? 'bg-primary-600 text-white hover:bg-primary-700 shadow-sm' :
+                  action.variant === 'warning' ? 'bg-warning-500 text-white hover:bg-warning-600' :
+                  action.variant === 'danger' ? 'bg-critical-600 text-white hover:bg-critical-700' :
+                  action.variant === 'info' ? 'bg-info-50 text-info-700 hover:bg-info-100' :
+                  'bg-surface-100 text-primary-700 hover:bg-surface-200'
+                }`}
               >
-                <FileCheck size={16} />
-                编辑
+                {action.key === 'edit' && <FileCheck size={16} />}
+                {action.key === 'submit' && <Send size={16} />}
+                {action.key === 'withdraw' && <RotateCcw size={16} />}
+                {action.key === 'resubmit' && <Send size={16} />}
+                {action.key === 'resume' && <RefreshCcw size={16} />}
+                {action.label}
               </button>
-              <button
-                onClick={() => onSubmit?.(record.id)}
-                className="flex items-center justify-center gap-1.5 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 transition-colors shadow-sm"
-              >
-                <Send size={16} />
-                提交
-              </button>
+              {action.disabled && action.reason && (
+                <p className="text-[10px] text-surface-400 text-center mt-1">{action.reason}</p>
+              )}
             </div>
-          )}
-          {record.status === 'submitted' && (
-            <button
-              onClick={() => onWithdraw?.(record.id)}
-              className="w-full flex items-center justify-center gap-1.5 py-2.5 bg-warning-500 text-white rounded-xl text-sm font-medium hover:bg-warning-600 transition-colors"
-            >
-              <RotateCcw size={16} />
-              撤销回滚
-            </button>
-          )}
-          {record.status === 'withdrawn' && (
-            <button
-              onClick={() => onResubmit?.(record.id)}
-              className="w-full flex items-center justify-center gap-1.5 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 transition-colors shadow-sm"
-            >
-              <Send size={16} />
-              重新发起
-            </button>
-          )}
-          {(record.status === 'draft' || record.status === 'withdrawn') && (
-            <button
-              onClick={() => onResume?.(record.id)}
-              className="w-full flex items-center justify-center gap-1.5 py-2.5 bg-info-50 text-info-700 rounded-xl text-sm font-medium hover:bg-info-100 transition-colors"
-            >
-              <RefreshCcw size={16} />
-              恢复续办
-            </button>
-          )}
+          ))}
           {record.status === 'synced' && (
             <div className="flex items-center justify-center gap-2 py-2 text-success-600 text-sm">
               <AlertCircle size={16} />

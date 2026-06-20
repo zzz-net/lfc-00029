@@ -244,6 +244,114 @@ export const exportFields: ExportField[] = [
   { key: 'lastStatusChange', label: '最近状态变更', csvOnly: true },
 ];
 
+export interface ButtonDisableReason {
+  key: string;
+  message: string;
+}
+
+export interface StaleDraftConfig {
+  bannerTitle: string;
+  bannerMessage: string;
+  actionLabel: string;
+  dismissLabel: string;
+  migrateSuccessMessage: string;
+  versionMismatchDetail: string;
+}
+
+export interface ImportConfig {
+  jsonLabel: string;
+  csvLabel: string;
+  jsonDesc: string;
+  csvDesc: string;
+  maxFileSize: number;
+  successMessage: string;
+  partialSuccessMessage: string;
+  failMessage: string;
+  invalidFormatMessage: string;
+  oversizeMessage: string;
+}
+
+export interface OperationLogConfig {
+  sectionTitle: string;
+  emptyText: string;
+  maxDisplayCount: number;
+}
+
+export const buttonDisableReasons: Record<string, ButtonDisableReason> = {
+  submit_version_mismatch: {
+    key: 'submit_version_mismatch',
+    message: '模板版本已更新，请先迁移草稿后再提交',
+  },
+  submit_required_missing: {
+    key: 'submit_required_missing',
+    message: '存在必填项未填写，无法提交',
+  },
+  submit_conflict_exists: {
+    key: 'submit_conflict_exists',
+    message: '存在未解决的冲突，请先处理',
+  },
+  submit_duplicate: {
+    key: 'submit_duplicate',
+    message: '同设备同日已有提交中的记录，请先处理',
+  },
+  withdraw_wrong_status: {
+    key: 'withdraw_wrong_status',
+    message: '仅"已提交"状态可撤回',
+  },
+  resubmit_wrong_status: {
+    key: 'resubmit_wrong_status',
+    message: '仅"已撤回"状态可重新发起',
+  },
+  edit_wrong_status: {
+    key: 'edit_wrong_status',
+    message: '仅草稿或已撤回状态可编辑',
+  },
+  resume_wrong_status: {
+    key: 'resume_wrong_status',
+    message: '仅草稿或已撤回状态可恢复续办',
+  },
+  already_completed: {
+    key: 'already_completed',
+    message: '记录已同步完成，无需操作',
+  },
+  conflict_unresolved: {
+    key: 'conflict_unresolved',
+    message: '请前往同步中心处理冲突',
+  },
+  offline_no_network: {
+    key: 'offline_no_network',
+    message: '当前离线模式，部分操作不可用',
+  },
+};
+
+export const staleDraftConfig: StaleDraftConfig = {
+  bannerTitle: '检测到旧版草稿',
+  bannerMessage: '以下草稿基于旧版模板创建，请选择迁移或删除后重新创建',
+  actionLabel: '迁移至最新模板',
+  dismissLabel: '暂不处理',
+  migrateSuccessMessage: '草稿已迁移至最新模板版本',
+  versionMismatchDetail: '草稿版本 v{old}，最新版本 v{latest}',
+};
+
+export const importConfig: ImportConfig = {
+  jsonLabel: '导入 JSON',
+  csvLabel: '导入 CSV',
+  jsonDesc: '从 JSON 文件导入提交单数据',
+  csvDesc: '从 CSV 文件导入提交单数据',
+  maxFileSize: 10 * 1024 * 1024,
+  successMessage: '成功导入 {count} 条提交单',
+  partialSuccessMessage: '导入完成：成功 {success} 条，跳过 {skipped} 条，失败 {fail} 条',
+  failMessage: '导入失败：{reason}',
+  invalidFormatMessage: '文件格式不正确，请检查后重试',
+  oversizeMessage: '文件大小超过 10MB 限制',
+};
+
+export const operationLogConfig: OperationLogConfig = {
+  sectionTitle: '操作日志',
+  emptyText: '暂无操作日志',
+  maxDisplayCount: 20,
+};
+
 export const businessTips: Record<string, BusinessTip> = {
   duplicateSubmit: {
     title: '重复提交提醒',
@@ -491,6 +599,10 @@ export const appConfig = {
   workbench: workbenchSections,
   features: featureFlags,
   validation: validationMessages,
+  disableReasons: buttonDisableReasons,
+  staleDraft: staleDraftConfig,
+  importMeta: importConfig,
+  operationLog: operationLogConfig,
 };
 
 export type AppConfig = typeof appConfig;

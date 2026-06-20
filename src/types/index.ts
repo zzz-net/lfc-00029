@@ -266,3 +266,33 @@ export interface DuplicateCheckResult {
   existingSubmittedAt?: string;
   reason?: 'same_day_same_device' | 'same_values_hash';
 }
+
+export interface StaleDraftInfo {
+  recordId: string;
+  recordTemplateVersion: number;
+  latestTemplateVersion: number;
+  templateId: string;
+  templateName: string;
+}
+
+export interface ImportResult {
+  successCount: number;
+  failCount: number;
+  skippedCount: number;
+  errors: ImportErrorItem[];
+  importedIds: string[];
+}
+
+export interface ImportErrorItem {
+  row: number;
+  id?: string;
+  reason: string;
+}
+
+export interface ButtonActionState {
+  key: string;
+  label: string;
+  disabled: boolean;
+  reason: string;
+  variant: 'primary' | 'warning' | 'danger' | 'info' | 'ghost';
+}

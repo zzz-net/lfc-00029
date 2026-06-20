@@ -42,6 +42,9 @@ import {
   buildTimelineEvents,
   getMissingRequiredFields,
   canPerformAction,
+  detectStaleDrafts,
+  validateImportData,
+  parseCsvToRecords,
 } from '@/lib/submissionWorkbench';
 import { featureFlags } from '@/config/appConfig';
 import { apiClient } from '@/api/client';
@@ -68,6 +71,8 @@ import type {
   TimelineEvent,
   ExportFilter,
   ExportFormat,
+  StaleDraftInfo,
+  ImportResult,
 } from '@/types';
 
 interface AppStore {
@@ -146,6 +151,10 @@ interface AppStore {
   saveSession: (session: Partial<SessionState>) => Promise<void>;
   restoreSession: () => Promise<SessionState | null>;
   clearRecoveredSession: () => void;
+
+  getStaleDrafts: () => StaleDraftInfo[];
+  migrateStaleDraft: (recordId: string) => Promise<InspectionRecord>;
+  importRecords: (data: any[], format: 'json' | 'csv') => Promise<ImportResult>;
 
   resetError: () => void;
 }
@@ -1546,6 +1555,133 @@ export const useStore = create<AppStore>((set, get) => ({
 
   clearRecoveredSession: () => {
     set({ recoveredSession: null });
+  },
+
+  getStaleDrafts: () => {
+    const { inspections, templates } = get();
+    return detectStaleDrafts(inspections, templates);
+  },
+
+  migrateStaleDraft: async (recordId: string) => {
+    const { inspections, templates, currentUserId, currentUserName } = get();
+    const existing = inspections.find(r => r.id === recordId);
+    if (!existing) throw new Error('记录不存在');
+    if (existing.status !== 'draft' && existing.status !== 'resumed' && existing.status !== 'withdrawn') {
+      throw new Error('仅草稿、续办中或已撤回状态可迁移');
+    }
+    const template = templates.find(t => t.id === existing.templateId);
+    if (!template) throw new Error('对应模板不存在，无法迁移');
+    if (existing.templateVersion >= template.version) {
+      throw new Error('该记录模板已是最新版本');
+    }
+
+    const now = new Date().toISOString();
+    const migratedValues: Record<string, any> = { ...existing.values };
+    for (const field of template.fields) {
+      if (!(field.key in migratedValues)) {
+        migratedValues[field.key] = field.type === 'number' ? null :
+          field.type === 'select' ? '' :
+          field.type === 'photo' ? '' : '';
+      }
+    }
+
+    const anomalyLevel = calculateAnomalyLevel(migratedValues, template.fields);
+
+    const updated: InspectionRecord = {
+      ...existing,
+      values: migratedValues,
+      templateVersion: template.version,
+      anomalyLevel,
+      status: 'draft',
+      updatedAt: now,
+    };
+
+    await putInspection(updated);
+
+    const evt: StatusChangeEvent = {
+      id: generateId('evt'),
+      recordId,
+      fromStatus: existing.status,
+      toStatus: 'draft',
+      action: 'save_draft',
+      actorId: currentUserId,
+      actorName: currentUserName,
+      timestamp: now,
+      note: `模板从 v${existing.templateVersion} 迁移至 v${template.version}，状态重置为草稿`,
+      deviceId: existing.deviceId,
+      date: existing.date,
+    };
+    await dbAddStatusEvent(evt);
+    set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
+
+    set((state) => ({
+      inspections: state.inspections.map(r => (r.id === recordId ? updated : r)),
+    }));
+
+    await get().addLogEntry({
+      userId: currentUserId,
+      userName: currentUserName,
+      action: '迁移旧版草稿',
+      target: recordId,
+      detail: `模板 v${existing.templateVersion} → v${template.version}，状态重置为草稿`,
+      result: 'success',
+    });
+
+    return updated;
+  },
+
+  importRecords: async (data: any[], format: 'json' | 'csv') => {
+    const { inspections, currentUserId, currentUserName } = get();
+    let parsedData = data;
+    if (format === 'csv' && data.length > 0 && typeof data[0] === 'string') {
+      parsedData = parseCsvToRecords(data[0] as string);
+    }
+
+    const { valid, skipped, errors } = validateImportData(parsedData, inspections);
+
+    const importedIds: string[] = [];
+    for (const record of valid) {
+      await putInspection(record);
+      const meta: RecordMeta = {
+        recordId: record.id,
+        submissionCount: record.submissionCount || 0,
+        withdrawCount: record.withdrawCount || 0,
+        hasConflict: record.status === 'conflict',
+        exportCount: 0,
+      };
+      await dbPutMeta(meta);
+      importedIds.push(record.id);
+    }
+
+    set((state) => ({
+      inspections: [...valid, ...state.inspections],
+      recordMetaList: [...valid.map(r => ({
+        recordId: r.id,
+        submissionCount: r.submissionCount || 0,
+        withdrawCount: r.withdrawCount || 0,
+        hasConflict: r.status === 'conflict',
+        exportCount: 0,
+      })), ...state.recordMetaList],
+    }));
+
+    if (importedIds.length > 0) {
+      await get().addLogEntry({
+        userId: currentUserId,
+        userName: currentUserName,
+        action: '导入提交单数据',
+        target: 'import',
+        detail: `导入 ${valid.length} 条记录，跳过 ${skipped.length} 条（ID重复），失败 ${errors.length} 条`,
+        result: errors.length > 0 ? 'conflict' : 'success',
+      });
+    }
+
+    return {
+      successCount: valid.length,
+      failCount: errors.length,
+      skippedCount: skipped.length,
+      errors,
+      importedIds,
+    };
   },
 
   resetError: () => set({ error: null }),
