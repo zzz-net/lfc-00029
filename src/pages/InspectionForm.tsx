@@ -10,6 +10,9 @@ import {
   FileText,
   Clock,
   Image,
+  RefreshCw,
+  FilePlus,
+  ChevronRight,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { getTodayString, generateId } from '@/utils/id';
@@ -44,12 +47,14 @@ export default function InspectionForm() {
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [templateVersionMismatch, setTemplateVersionMismatch] = useState(false);
+  const [showVersionDialog, setShowVersionDialog] = useState(false);
+  const [mismatchDraft, setMismatchDraft] = useState<InspectionRecord | null>(null);
 
   useEffect(() => {
-    if (existingDrafts.length > 0) {
+    if (existingDrafts.length > 0 && !selectedDraftId) {
       setShowDraftPicker(true);
     }
-  }, []);
+  }, [existingDrafts.length, selectedDraftId]);
 
   useEffect(() => {
     if (selectedDraftId) {
@@ -59,6 +64,10 @@ export default function InspectionForm() {
         setPhotos(draft.photos);
         if (template && draft.templateVersion !== template.version) {
           setTemplateVersionMismatch(true);
+          setMismatchDraft(draft);
+        } else {
+          setTemplateVersionMismatch(false);
+          setMismatchDraft(null);
         }
       }
     }
@@ -192,9 +201,20 @@ export default function InspectionForm() {
   const handleSubmit = async () => {
     if (!template || !deviceId) return;
 
+    if (templateVersionMismatch && mismatchDraft) {
+      setShowVersionDialog(true);
+      return;
+    }
+
     if (!validateForm()) {
       return;
     }
+
+    await doSubmit();
+  };
+
+  const doSubmit = async () => {
+    if (!template || !deviceId) return;
 
     setSubmitting(true);
     try {
@@ -212,6 +232,60 @@ export default function InspectionForm() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleMigrateToNewTemplate = async () => {
+    if (!template || !deviceId || !selectedDraftId) return;
+
+    const newValues: Record<string, any> = {};
+    for (const field of template.fields) {
+      if (values[field.key] !== undefined) {
+        newValues[field.key] = values[field.key];
+      }
+    }
+
+    await saveInspectionDraft({
+      id: selectedDraftId,
+      deviceId,
+      templateId: template.id,
+      templateVersion: template.version,
+      date: today,
+      values: newValues,
+      photos,
+    });
+
+    setValues(newValues);
+    setMismatchDraft(null);
+    setTemplateVersionMismatch(false);
+    setShowVersionDialog(false);
+  };
+
+  const handleUseNewTemplate = async () => {
+    if (!template || !deviceId || !selectedDraftId) return;
+
+    const emptyValues: Record<string, any> = {};
+    for (const field of template.fields) {
+      if (field.required) {
+        emptyValues[field.key] = '';
+      }
+    }
+
+    await saveInspectionDraft({
+      id: selectedDraftId,
+      deviceId,
+      templateId: template.id,
+      templateVersion: template.version,
+      date: today,
+      values: emptyValues,
+      photos: [],
+    });
+
+    setValues(emptyValues);
+    setPhotos([]);
+    setErrors({});
+    setMismatchDraft(null);
+    setTemplateVersionMismatch(false);
+    setShowVersionDialog(false);
   };
 
   const anomalyLevel = template ? calculateAnomalyLevel(values, template.fields) : 'none';
@@ -236,7 +310,7 @@ export default function InspectionForm() {
 
     return (
       <div key={field.id} className="space-y-2">
-        <label className="flex items-center gap-1 text-sm font-medium text-primary-700">
+        <label htmlFor={`field-${field.key}`} className="flex items-center gap-1 text-sm font-medium text-primary-700">
           {field.label}
           {field.required && <span className="text-danger-500">*</span>}
           {field.anomalyLevel && (
@@ -252,6 +326,7 @@ export default function InspectionForm() {
 
         {field.type === 'text' && (
           <input
+            id={`field-${field.key}`}
             type="text"
             value={values[field.key] || ''}
             onChange={(e) => handleValueChange(field.key, e.target.value)}
@@ -262,6 +337,7 @@ export default function InspectionForm() {
 
         {field.type === 'number' && (
           <input
+            id={`field-${field.key}`}
             type="number"
             value={values[field.key] ?? ''}
             onChange={(e) => handleValueChange(field.key, e.target.value ? Number(e.target.value) : '')}
@@ -272,6 +348,7 @@ export default function InspectionForm() {
 
         {field.type === 'select' && (
           <select
+            id={`field-${field.key}`}
             value={values[field.key] || ''}
             onChange={(e) => handleValueChange(field.key, e.target.value)}
             className={`${baseInputClass} bg-white`}
@@ -287,6 +364,7 @@ export default function InspectionForm() {
 
         {field.type === 'textarea' && (
           <textarea
+            id={`field-${field.key}`}
             value={values[field.key] || ''}
             onChange={(e) => handleValueChange(field.key, e.target.value)}
             placeholder={`请输入${field.label}`}
@@ -392,14 +470,30 @@ export default function InspectionForm() {
       </div>
 
       <div className="p-4 space-y-4 max-w-md mx-auto">
-        {templateVersionMismatch && (
-          <div className="bg-warning-50 border border-warning-200 rounded-xl p-3 flex items-start gap-3">
-            <AlertCircle size={18} className="text-warning-600 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-medium text-warning-700">模板版本不一致</p>
-              <p className="text-xs text-warning-600 mt-0.5">
-                草稿基于旧模板版本，提交时将使用当前最新版本模板
-              </p>
+        {templateVersionMismatch && mismatchDraft && (
+          <div className="bg-warning-50 border border-warning-300 rounded-xl p-4">
+            <div className="flex items-start gap-3 mb-3">
+              <AlertCircle size={20} className="text-warning-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-bold text-warning-800">模板版本不一致</p>
+                <p className="text-xs text-warning-700 mt-1">
+                  草稿基于 v{mismatchDraft.templateVersion} 版本，当前模板已更新至 v{template.version}
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowVersionDialog(true)}
+                className="flex-1 py-2 bg-warning-500 text-white text-sm font-medium rounded-lg hover:bg-warning-600 transition-colors"
+              >
+                处理版本问题
+              </button>
+              <button
+                onClick={handleMigrateToNewTemplate}
+                className="flex-1 py-2 bg-white border border-warning-300 text-warning-700 text-sm font-medium rounded-lg hover:bg-warning-50 transition-colors"
+              >
+                一键迁移
+              </button>
             </div>
           </div>
         )}
@@ -559,6 +653,66 @@ export default function InspectionForm() {
                 className="w-full py-2.5 text-primary-400 text-sm"
               >
                 取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showVersionDialog && mismatchDraft && template && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-warning-100 rounded-full flex items-center justify-center">
+                <AlertCircle size={20} className="text-warning-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-primary-800">模板版本冲突</h3>
+                <p className="text-xs text-primary-500">
+                  v{mismatchDraft.templateVersion} → v{template.version}
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-primary-600 mb-2">
+              草稿基于旧模板版本创建，不能直接提交。请选择以下处理方式：
+            </p>
+            <div className="bg-warning-50 border border-warning-200 rounded-lg p-3 mb-4">
+              <p className="text-xs text-warning-700">
+                ⚠️ 未解决版本问题前，该草稿无法进入同步流程
+              </p>
+            </div>
+            <div className="space-y-2">
+              <button
+                onClick={handleMigrateToNewTemplate}
+                className="w-full py-3 px-4 rounded-xl bg-primary-600 text-white font-medium hover:bg-primary-700 transition-colors flex items-center justify-between"
+              >
+                <div className="flex items-center gap-3">
+                  <RefreshCw size={18} />
+                  <div className="text-left">
+                    <p className="text-sm">迁移数据到新版本</p>
+                    <p className="text-[10px] text-primary-200">保留已有填写内容，移除已删除字段</p>
+                  </div>
+                </div>
+                <ChevronRight size={18} />
+              </button>
+              <button
+                onClick={handleUseNewTemplate}
+                className="w-full py-3 px-4 rounded-xl border border-surface-200 text-primary-700 font-medium hover:bg-surface-50 transition-colors flex items-center justify-between"
+              >
+                <div className="flex items-center gap-3">
+                  <FilePlus size={18} className="text-primary-500" />
+                  <div className="text-left">
+                    <p className="text-sm">使用新版本重新填写</p>
+                    <p className="text-[10px] text-primary-400">清空当前内容，从空白开始</p>
+                  </div>
+                </div>
+                <ChevronRight size={18} />
+              </button>
+              <button
+                onClick={() => setShowVersionDialog(false)}
+                className="w-full py-2.5 text-primary-400 text-sm"
+              >
+                取消，继续编辑
               </button>
             </div>
           </div>

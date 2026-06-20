@@ -23,20 +23,9 @@ export default function Home() {
     inspections,
     conflicts,
     offlineMode,
-    loadInitialData,
-    seedDevices,
-    isLoading,
   } = useStore();
 
   const today = getTodayString();
-
-  useEffect(() => {
-    loadInitialData();
-  }, []);
-
-  useEffect(() => {
-    seedDevices();
-  }, [devices.length]);
 
   const todayInspections = inspections.filter((r) => r.date === today);
   const draftCount = inspections.filter((r) => r.status === 'draft').length;
@@ -110,14 +99,6 @@ export default function Home() {
           { label: '同步中心', icon: RefreshCw, path: '/sync', color: 'bg-success-500 hover:bg-success-600' },
           { label: '操作日志', icon: Clock, path: '/logs', color: 'bg-primary-700 hover:bg-primary-800' },
         ];
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-surface-100 flex items-center justify-center">
-        <div className="text-primary-600 animate-pulse">加载中...</div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-surface-100 pb-20">
