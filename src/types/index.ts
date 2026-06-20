@@ -4,9 +4,9 @@ export type AnomalyLevel = 'none' | 'low' | 'medium' | 'high' | 'critical';
 
 export type FieldType = 'text' | 'number' | 'select' | 'photo' | 'textarea';
 
-export type RecordStatus = 'draft' | 'submitted' | 'synced' | 'conflict';
+export type RecordStatus = 'draft' | 'submitted' | 'synced' | 'conflict' | 'withdrawn' | 'resumed';
 
-export type StatusChangeAction = 'create_draft' | 'save_draft' | 'submit' | 'withdraw' | 'resubmit' | 'sync_success' | 'sync_fail' | 'conflict_detected' | 'conflict_resolved' | 'edit_after_sync';
+export type StatusChangeAction = 'create_draft' | 'save_draft' | 'submit' | 'withdraw' | 'resubmit' | 'sync_success' | 'sync_fail' | 'conflict_detected' | 'conflict_resolved' | 'edit_after_sync' | 'resume' | 'resubmit_after_withdraw' | 'withdraw_audit_logged';
 
 export type DeviceStatus = 'normal' | 'maintenance' | 'offline';
 
@@ -167,4 +167,102 @@ export interface AppState {
   currentUserId: string;
   currentUserName: string;
   lastVisitAt?: string;
+}
+
+export interface SubmissionReceipt {
+  id: string;
+  recordId: string;
+  receiptNo: string;
+  submittedAt: string;
+  receivedAt?: string;
+  sourceDeviceId: string;
+  sourceDeviceInfo: string;
+  operatorId: string;
+  operatorName: string;
+  snapshotId: string;
+  recordValuesHash: string;
+  status: 'pending' | 'acknowledged' | 'failed';
+  errorMessage?: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  recordId: string;
+  timestamp: string;
+  action: StatusChangeAction | string;
+  operatorId: string;
+  operatorName: string;
+  sourceDeviceId: string;
+  fromStatus: RecordStatus | null;
+  toStatus: RecordStatus | null;
+  detail: string;
+  snapshotBefore?: string;
+  snapshotAfter?: string;
+  result: 'success' | 'fail' | 'skipped';
+  errorMessage?: string;
+}
+
+export interface SessionState {
+  id: string;
+  userId: string;
+  deviceId: string;
+  startedAt: string;
+  lastActiveAt: string;
+  lastEditingRecordId?: string;
+  lastEditingField?: string;
+  scrollPosition?: number;
+  formValues?: Record<string, any>;
+  unsavedChanges: boolean;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  errors: ValidationErrorItem[];
+  warnings: ValidationWarningItem[];
+}
+
+export interface ValidationErrorItem {
+  type: 'required' | 'version' | 'status_gate' | 'duplicate' | 'conflict' | 'format';
+  fieldKey?: string;
+  message: string;
+  blocking: boolean;
+}
+
+export interface ValidationWarningItem {
+  type: 'auxiliary_skip' | 'multi_version' | 'offline_hint' | 'recommend';
+  fieldKey?: string;
+  message: string;
+}
+
+export interface TimelineEvent {
+  id: string;
+  recordId: string;
+  timestamp: string;
+  action: StatusChangeAction | string;
+  actionLabel: string;
+  operatorName: string;
+  fromStatus: RecordStatus | null;
+  toStatus: RecordStatus | null;
+  note?: string;
+  sourceDeviceId?: string;
+  receiptId?: string;
+  snapshotId?: string;
+}
+
+export interface ExportFilter {
+  startDate?: string;
+  endDate?: string;
+  deviceIds?: string[];
+  statuses?: RecordStatus[];
+  inspectorIds?: string[];
+}
+
+export type ExportFormat = 'json' | 'csv';
+
+export interface DuplicateCheckResult {
+  isDuplicate: boolean;
+  existingRecordId?: string;
+  existingStatus?: RecordStatus;
+  existingSubmittedAt?: string;
+  reason?: 'same_day_same_device' | 'same_values_hash';
 }

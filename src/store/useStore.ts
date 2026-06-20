@@ -24,7 +24,26 @@ import {
   getAllRecordMeta,
   putRecordMeta as dbPutMeta,
   deleteSyncQueueItem as dbDeleteSyncItem,
+  getAllSubmissionReceipts,
+  putSubmissionReceipt as dbPutReceipt,
+  getReceiptsByRecord as dbGetReceiptsByRecord,
+  getAllAuditLogs,
+  addAuditLog as dbAddAuditLog,
+  getAuditLogsByRecord as dbGetAuditLogsByRecord,
+  getAllSessionStates,
+  putSessionState as dbPutSession,
+  getSessionByUserDevice as dbGetSessionByUserDevice,
 } from '@/db/indexedDb';
+import {
+  generateReceiptNo,
+  getDeviceFingerprint,
+  computeValuesHash,
+  buildFullValidation,
+  buildTimelineEvents,
+  getMissingRequiredFields,
+  canPerformAction,
+} from '@/lib/submissionWorkbench';
+import { featureFlags } from '@/config/appConfig';
 import { apiClient } from '@/api/client';
 import { generateId, getTodayString } from '@/utils/id';
 import { calculateAnomalyLevel } from '@/utils/anomaly';
@@ -42,6 +61,13 @@ import type {
   StatusChangeAction,
   ConflictResolution,
   RecordStatus,
+  SubmissionReceipt,
+  AuditLogEntry,
+  SessionState,
+  ValidationResult,
+  TimelineEvent,
+  ExportFilter,
+  ExportFormat,
 } from '@/types';
 
 interface AppStore {
@@ -60,12 +86,17 @@ interface AppStore {
   statusHistory: StatusChangeEvent[];
   submissionSnapshots: SubmissionSnapshot[];
   recordMetaList: RecordMeta[];
+  submissionReceipts: SubmissionReceipt[];
+  auditLogs: AuditLogEntry[];
+  sessionStates: SessionState[];
+  currentDeviceId: string;
 
   isLoading: boolean;
   error: string | null;
 
   sessionRecovered: boolean;
   lastVisitAt: string | null;
+  recoveredSession: SessionState | null;
 
   setRole: (role: UserRole) => void;
   setOfflineMode: (offline: boolean) => void;
@@ -83,6 +114,14 @@ interface AppStore {
   saveInspectionDraft: (data: Partial<InspectionRecord>) => Promise<InspectionRecord>;
   submitInspection: (data: Partial<InspectionRecord>) => Promise<InspectionRecord>;
   withdrawInspection: (recordId: string) => Promise<InspectionRecord>;
+  resumeInspection: (recordId: string) => Promise<InspectionRecord>;
+  resubmitAfterWithdraw: (data: Partial<InspectionRecord>) => Promise<InspectionRecord>;
+
+  validateOperation: (
+    recordId: string | undefined,
+    data: Partial<InspectionRecord>,
+    action: StatusChangeAction
+  ) => ValidationResult;
 
   syncAll: () => Promise<{ success: number; conflicts: number; errors: number }>;
   resolveConflict: (
@@ -96,8 +135,17 @@ interface AppStore {
   getStatusHistory: (recordId: string) => StatusChangeEvent[];
   getSubmissionSnapshots: (recordId: string) => SubmissionSnapshot[];
   getLatestSnapshot: (recordId: string) => SubmissionSnapshot | undefined;
+  getSubmissionReceipts: (recordId: string) => SubmissionReceipt[];
+  getLatestReceipt: (recordId: string) => SubmissionReceipt | undefined;
+  getAuditLogs: (recordId: string) => AuditLogEntry[];
+  getTimelineEvents: (recordId: string) => TimelineEvent[];
 
   markRecordExported: (recordId: string) => Promise<void>;
+  exportRecords: (filter: ExportFilter, format: ExportFormat) => Promise<any[]>;
+
+  saveSession: (session: Partial<SessionState>) => Promise<void>;
+  restoreSession: () => Promise<SessionState | null>;
+  clearRecoveredSession: () => void;
 
   resetError: () => void;
 }
@@ -118,12 +166,17 @@ export const useStore = create<AppStore>((set, get) => ({
   statusHistory: [],
   submissionSnapshots: [],
   recordMetaList: [],
+  submissionReceipts: [],
+  auditLogs: [],
+  sessionStates: [],
+  currentDeviceId: typeof window !== 'undefined' ? getDeviceFingerprint() : 'server-env',
 
   isLoading: false,
   error: null,
 
   sessionRecovered: false,
   lastVisitAt: null,
+  recoveredSession: null,
 
   setRole: (role: UserRole) => {
     set({ role });
@@ -142,6 +195,7 @@ export const useStore = create<AppStore>((set, get) => ({
   loadInitialData: async () => {
     set({ isLoading: true });
     try {
+      const state = get();
       const [
         templates,
         devices,
@@ -152,6 +206,9 @@ export const useStore = create<AppStore>((set, get) => ({
         statusHistory,
         submissionSnapshots,
         recordMetaList,
+        submissionReceipts,
+        auditLogs,
+        sessionStates,
         savedRole,
         savedOffline,
         lastVisit,
@@ -165,6 +222,9 @@ export const useStore = create<AppStore>((set, get) => ({
         getAllStatusHistory(),
         getAllSubmissionSnapshots(),
         getAllRecordMeta(),
+        getAllSubmissionReceipts(),
+        getAllAuditLogs(),
+        getAllSessionStates(),
         getAppState('role'),
         getAppState('offlineMode'),
         getAppState('lastVisitAt'),
@@ -173,8 +233,14 @@ export const useStore = create<AppStore>((set, get) => ({
       const now = new Date().toISOString();
       await setAppState('lastVisitAt', now);
 
-      const drafts = inspections.filter((r) => r.status === 'draft').length;
-      const pending = inspections.filter((r) => r.status === 'submitted').length;
+      let recoveredSession: SessionState | null = null;
+      if (featureFlags.enableAutoResume) {
+        try {
+          recoveredSession = await dbGetSessionByUserDevice(state.currentUserId, state.currentDeviceId);
+        } catch (e) {
+          console.warn('Failed to restore session:', e);
+        }
+      }
 
       set({
         templates,
@@ -186,11 +252,15 @@ export const useStore = create<AppStore>((set, get) => ({
         statusHistory,
         submissionSnapshots,
         recordMetaList,
+        submissionReceipts,
+        auditLogs,
+        sessionStates,
         role: savedRole || 'inspector',
         offlineMode: savedOffline || false,
         networkStatus: savedOffline ? 'offline' : 'online',
         lastVisitAt: lastVisit || null,
         sessionRecovered: true,
+        recoveredSession,
       });
 
       if (!savedOffline) {
@@ -458,7 +528,7 @@ export const useStore = create<AppStore>((set, get) => ({
       const event: StatusChangeEvent = {
         id: generateId('evt'),
         recordId: record.id,
-        fromStatus: null,
+        fromStatus: 'draft',
         toStatus: 'draft',
         action: 'create_draft',
         actorId: currentUserId,
@@ -470,7 +540,7 @@ export const useStore = create<AppStore>((set, get) => ({
       };
       await dbAddStatusEvent(event);
       set((state) => ({ statusHistory: [...state.statusHistory, event] }));
-    } else if (prevStatus && prevStatus !== 'draft') {
+    } else if (prevStatus) {
       const event: StatusChangeEvent = {
         id: generateId('evt'),
         recordId: record.id,
@@ -480,7 +550,7 @@ export const useStore = create<AppStore>((set, get) => ({
         actorId: currentUserId,
         actorName: currentUserName,
         timestamp: now,
-        note: '编辑后保存为草稿',
+        note: prevStatus === 'draft' ? '编辑草稿并保存' : '编辑后保存为草稿',
         deviceId: record.deviceId,
         date: record.date,
       };
@@ -514,7 +584,7 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   submitInspection: async (data: Partial<InspectionRecord>) => {
-    const { offlineMode, inspections, templates, currentUserId, currentUserName, recordMetaList, statusHistory } = get();
+    const { offlineMode, inspections, templates, currentUserId, currentUserName, recordMetaList, statusHistory, currentDeviceId, devices } = get();
 
     const template = templates.find((t) => t.id === data.templateId);
     if (!template) throw new Error('模板不存在');
@@ -532,7 +602,9 @@ export const useStore = create<AppStore>((set, get) => ({
       const existing = inspections.find((r) => r.id === data.id);
       if (existing) {
         prevStatus = existing.status;
-        const newSubCount = (existing.submissionCount || 0) + 1;
+        const existingMeta = recordMetaList.find((m) => m.recordId === data.id);
+        const baseCount = Math.max(existing.submissionCount || 0, existingMeta?.submissionCount || 0);
+        const newSubCount = baseCount + 1;
         record = {
           ...existing,
           ...data,
@@ -612,7 +684,7 @@ export const useStore = create<AppStore>((set, get) => ({
       const evt: StatusChangeEvent = {
         id: generateId('evt'),
         recordId: record.id,
-        fromStatus: null,
+        fromStatus: 'draft',
         toStatus: record.status,
         action: 'submit',
         actorId: currentUserId,
@@ -631,7 +703,7 @@ export const useStore = create<AppStore>((set, get) => ({
 
       const newMeta: RecordMeta = {
         ...(meta || { recordId: record.id, submissionCount: 0, withdrawCount: 0, hasConflict: false, exportCount: 0 }),
-        submissionCount: record.submissionCount || 1,
+        submissionCount: record.submissionCount,
         lastSubmittedAt: now,
         firstSubmittedAt: meta?.firstSubmittedAt || now,
       };
@@ -670,7 +742,7 @@ export const useStore = create<AppStore>((set, get) => ({
       }
     }
 
-    const device = get().devices.find((d) => d.id === record.deviceId);
+    const device = devices.find((d) => d.id === record.deviceId);
     const snapshot: SubmissionSnapshot = {
       id: generateId('snap'),
       recordId: record.id,
@@ -691,6 +763,31 @@ export const useStore = create<AppStore>((set, get) => ({
     };
     await dbAddSnapshot(snapshot);
     set((state) => ({ submissionSnapshots: [...state.submissionSnapshots, snapshot] }));
+
+    if (featureFlags.enableSnapshotRetention) {
+      try {
+        const receipt: SubmissionReceipt = {
+          id: generateId('rcp'),
+          recordId: record.id,
+          receiptNo: generateReceiptNo(record.id, now),
+          submittedAt: now,
+          sourceDeviceId: currentDeviceId,
+          sourceDeviceInfo: `${device?.code || 'unknown'} - ${device?.name || 'unknown device'}`,
+          operatorId: currentUserId,
+          operatorName: currentUserName,
+          snapshotId: snapshot.id,
+          recordValuesHash: computeValuesHash(record.values),
+          status: offlineMode ? 'pending' : 'acknowledged',
+        };
+        await dbPutReceipt(receipt);
+        set((state) => ({ submissionReceipts: [receipt, ...(state.submissionReceipts || [])] }));
+      } catch (e) {
+        if (!featureFlags.enableAuxiliaryAsyncWrite) {
+          throw e;
+        }
+        console.warn('Receipt save failed (non-blocking):', e);
+      }
+    }
 
     if (offlineMode) {
       const queueItem: SyncQueueItem = {
@@ -733,17 +830,18 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   withdrawInspection: async (recordId: string) => {
-    const { inspections, currentUserId, currentUserName, recordMetaList, syncQueue } = get();
+    const { inspections, currentUserId, currentUserName, recordMetaList, syncQueue, currentDeviceId, submissionSnapshots } = get();
     const existing = inspections.find((r) => r.id === recordId);
-    if (!existing) throw new Error('记录不存在');
-    if (existing.status !== 'submitted') throw new Error('仅待同步状态可以撤回');
+    if (!existing) return null;
+    if (existing.status !== 'submitted') return null;
 
     const now = new Date().toISOString();
     const newWithdrawCount = (existing.withdrawCount || 0) + 1;
+    const targetStatus: RecordStatus = featureFlags.enableAuditLogOnWithdraw ? 'withdrawn' : 'draft';
 
     const updated: InspectionRecord = {
       ...existing,
-      status: 'draft',
+      status: targetStatus,
       updatedAt: now,
       withdrawCount: newWithdrawCount,
       lastWithdrawnAt: now,
@@ -776,17 +874,62 @@ export const useStore = create<AppStore>((set, get) => ({
       id: generateId('evt'),
       recordId,
       fromStatus: 'submitted',
-      toStatus: 'draft',
+      toStatus: targetStatus,
       action: 'withdraw',
       actorId: currentUserId,
       actorName: currentUserName,
       timestamp: now,
-      note: `第${newWithdrawCount}次撤回，回到草稿区`,
+      note: featureFlags.enableAuditLogOnWithdraw
+        ? `第${newWithdrawCount}次撤回，进入已撤回状态，审计日志已留存`
+        : `第${newWithdrawCount}次撤回，回到草稿区`,
       deviceId: existing.deviceId,
       date: existing.date,
     };
     await dbAddStatusEvent(evt);
     set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
+
+    if (featureFlags.enableAuditLogOnWithdraw) {
+      try {
+        const lastSnap = submissionSnapshots.find((s) => s.recordId === recordId);
+        const auditLog: AuditLogEntry = {
+          id: generateId('aud'),
+          recordId,
+          timestamp: now,
+          action: 'withdraw',
+          operatorId: currentUserId,
+          operatorName: currentUserName,
+          sourceDeviceId: currentDeviceId,
+          fromStatus: 'submitted',
+          toStatus: targetStatus,
+          detail: `第${newWithdrawCount}次撤回操作，提交次数：${existing.submissionCount || 0}，撤回前状态：submitted`,
+          snapshotBefore: lastSnap?.id,
+          result: 'success',
+        };
+        await dbAddAuditLog(auditLog);
+        set((state) => ({ auditLogs: [auditLog, ...(state.auditLogs || [])] }));
+
+        const auditEvt: StatusChangeEvent = {
+          id: generateId('evt'),
+          recordId,
+          fromStatus: targetStatus,
+          toStatus: targetStatus,
+          action: 'withdraw_audit_logged',
+          actorId: currentUserId,
+          actorName: currentUserName,
+          timestamp: now,
+          note: '撤回审计日志已记录',
+          deviceId: existing.deviceId,
+          date: existing.date,
+        };
+        await dbAddStatusEvent(auditEvt);
+        set((state) => ({ statusHistory: [...state.statusHistory, auditEvt] }));
+      } catch (e) {
+        if (!featureFlags.enableAuxiliaryAsyncWrite) {
+          throw e;
+        }
+        console.warn('Audit log save failed (non-blocking):', e);
+      }
+    }
 
     set((state) => ({
       inspections: state.inspections.map((r) => (r.id === recordId ? updated : r)),
@@ -797,7 +940,9 @@ export const useStore = create<AppStore>((set, get) => ({
       userName: currentUserName,
       action: '撤回至草稿',
       target: recordId,
-      detail: `从同步队列撤回，回到草稿区（第${newWithdrawCount}次撤回）`,
+      detail: featureFlags.enableAuditLogOnWithdraw
+        ? `从同步队列撤回，进入已撤回状态（第${newWithdrawCount}次撤回，审计日志已留存）`
+        : `从同步队列撤回，回到草稿区（第${newWithdrawCount}次撤回）`,
       result: 'success',
     });
 
@@ -1056,14 +1201,351 @@ export const useStore = create<AppStore>((set, get) => ({
 
   markRecordExported: async (recordId: string) => {
     const meta = get().recordMetaList.find((m) => m.recordId === recordId);
-    if (!meta) return;
-    const updated: RecordMeta = { ...meta, exportCount: meta.exportCount + 1 };
+    const updated: RecordMeta = meta
+      ? { ...meta, exportCount: meta.exportCount + 1 }
+      : { recordId, submissionCount: 0, withdrawCount: 0, hasConflict: false, exportCount: 1 };
     await dbPutMeta(updated);
     set((state) => ({
-      recordMetaList: state.recordMetaList.map((m) =>
-        m.recordId === recordId ? updated : m
-      ),
+      recordMetaList: state.recordMetaList.some((m) => m.recordId === recordId)
+        ? state.recordMetaList.map((m) => m.recordId === recordId ? updated : m)
+        : [...state.recordMetaList, updated],
     }));
+  },
+
+  validateOperation: (
+    recordId: string | undefined,
+    data: Partial<InspectionRecord>,
+    action: StatusChangeAction
+  ): ValidationResult => {
+    const state = get();
+    const existing = recordId ? state.inspections.find((r) => r.id === recordId) : undefined;
+    const template = state.templates.find((t) => t.id === data.templateId || existing?.templateId);
+    const currentStatus: RecordStatus = existing?.status || 'draft';
+    const hasConflict = existing?.status === 'conflict' || (existing?.id && state.conflicts.some((c) => !c.resolved && (c.localVersion.id === existing.id || c.remoteVersion.id === existing.id)));
+
+    return buildFullValidation({
+      values: data.values || existing?.values || {},
+      templateFields: template?.fields || [],
+      recordVersion: data.templateVersion || existing?.templateVersion || 1,
+      currentTemplate: template,
+      currentStatus,
+      targetAction: action,
+      deviceId: data.deviceId || existing?.deviceId || '',
+      date: data.date || existing?.date || getTodayString(),
+      existingRecords: state.inspections,
+      excludeRecordId: recordId,
+      hasConflict,
+    });
+  },
+
+  resumeInspection: async (recordId: string) => {
+    const { inspections, currentUserId, currentUserName } = get();
+    const existing = inspections.find((r) => r.id === recordId);
+    if (!existing) throw new Error('记录不存在');
+    if (existing.status !== 'draft' && existing.status !== 'withdrawn') throw new Error('仅草稿或已撤回状态可恢复续办');
+
+    const now = new Date().toISOString();
+    const updated: InspectionRecord = {
+      ...existing,
+      status: 'resumed',
+      updatedAt: now,
+    };
+
+    await putInspection(updated);
+
+    const evt: StatusChangeEvent = {
+      id: generateId('evt'),
+      recordId,
+      fromStatus: existing.status,
+      toStatus: 'resumed',
+      action: 'resume',
+      actorId: currentUserId,
+      actorName: currentUserName,
+      timestamp: now,
+      note: '恢复上次编辑现场，可继续填写',
+      deviceId: existing.deviceId,
+      date: existing.date,
+    };
+    await dbAddStatusEvent(evt);
+    set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
+
+    set((state) => ({
+      inspections: state.inspections.map((r) => (r.id === recordId ? updated : r)),
+    }));
+
+    return updated;
+  },
+
+  resubmitAfterWithdraw: async (data: Partial<InspectionRecord>) => {
+    const { currentUserId, currentUserName, currentDeviceId, inspections, templates } = get();
+    if (!data.id) throw new Error('记录ID不能为空');
+
+    const existing = inspections.find((r) => r.id === data.id);
+    if (!existing) throw new Error('记录不存在');
+    if (existing.status !== 'withdrawn' && existing.status !== 'draft') {
+      throw new Error('仅已撤回或草稿状态可重新发起');
+    }
+
+    const template = templates.find((t) => t.id === data.templateId || existing.templateId);
+    if (!template) throw new Error('模板不存在');
+
+    const now = new Date().toISOString();
+    const anomalyLevel = data.values
+      ? calculateAnomalyLevel(data.values, template.fields)
+      : existing.anomalyLevel;
+    const newSubCount = (existing.submissionCount || 0) + 1;
+
+    const updated: InspectionRecord = {
+      ...existing,
+      ...data,
+      anomalyLevel,
+      status: get().offlineMode ? 'submitted' : 'synced',
+      updatedAt: now,
+      submittedAt: now,
+      submissionCount: newSubCount,
+      syncedAt: get().offlineMode ? undefined : now,
+    };
+
+    await putInspection(updated);
+
+    const meta = get().recordMetaList.find((m) => m.recordId === existing.id);
+    const newMeta: RecordMeta = {
+      ...(meta || { recordId: existing.id, submissionCount: 0, withdrawCount: 0, hasConflict: false, exportCount: 0 }),
+      submissionCount: newSubCount,
+      lastSubmittedAt: now,
+      firstSubmittedAt: meta?.firstSubmittedAt || now,
+    };
+    await dbPutMeta(newMeta);
+    set((state) => ({
+      recordMetaList: state.recordMetaList.some((m) => m.recordId === existing.id)
+        ? state.recordMetaList.map((m) => (m.recordId === existing.id ? newMeta : m))
+        : [...state.recordMetaList, newMeta],
+    }));
+
+    const evt: StatusChangeEvent = {
+      id: generateId('evt'),
+      recordId: existing.id,
+      fromStatus: existing.status,
+      toStatus: updated.status,
+      action: 'resubmit_after_withdraw',
+      actorId: currentUserId,
+      actorName: currentUserName,
+      timestamp: now,
+      note: `撤回后重新发起提交（第${newSubCount}次提交，已撤回${existing.withdrawCount || 0}次）`,
+      deviceId: existing.deviceId,
+      date: existing.date,
+    };
+    await dbAddStatusEvent(evt);
+    set((state) => ({ statusHistory: [...state.statusHistory, evt] }));
+
+    const device = get().devices.find((d) => d.id === updated.deviceId);
+    const snapshot: SubmissionSnapshot = {
+      id: generateId('snap'),
+      recordId: updated.id,
+      snapshotAt: now,
+      submittedAt: updated.submittedAt || now,
+      recordValues: JSON.parse(JSON.stringify(updated.values)),
+      recordPhotos: JSON.parse(JSON.stringify(updated.photos)),
+      anomalyLevel: updated.anomalyLevel,
+      templateName: template.name,
+      templateVersion: template.version,
+      deviceCode: device?.code || '',
+      deviceName: device?.name || '',
+      inspectorId: updated.inspectorId,
+      inspectorName: updated.inspectorName,
+      date: updated.date,
+      submissionCount: newSubCount,
+      withdrawCount: updated.withdrawCount || 0,
+    };
+    await dbAddSnapshot(snapshot);
+    set((state) => ({ submissionSnapshots: [...state.submissionSnapshots, snapshot] }));
+
+    if (featureFlags.enableSnapshotRetention) {
+      try {
+        const receipt: SubmissionReceipt = {
+          id: generateId('rcp'),
+          recordId: updated.id,
+          receiptNo: generateReceiptNo(updated.id, now),
+          submittedAt: now,
+          sourceDeviceId: currentDeviceId,
+          sourceDeviceInfo: `${device?.code || 'unknown'} - ${device?.name || 'unknown device'}`,
+          operatorId: currentUserId,
+          operatorName: currentUserName,
+          snapshotId: snapshot.id,
+          recordValuesHash: computeValuesHash(updated.values),
+          status: get().offlineMode ? 'pending' : 'acknowledged',
+        };
+        await dbPutReceipt(receipt);
+        set((state) => ({ submissionReceipts: [receipt, ...(state.submissionReceipts || [])] }));
+      } catch (e) {
+        if (!featureFlags.enableAuxiliaryAsyncWrite) throw e;
+        console.warn('Receipt save failed (non-blocking):', e);
+      }
+    }
+
+    if (get().offlineMode) {
+      const queueItem: SyncQueueItem = {
+        id: generateId('sq'),
+        type: 'update',
+        recordId: updated.id,
+        status: 'pending',
+        createdAt: now,
+        retryCount: 0,
+      };
+      await addSyncQueueItem(queueItem);
+      set((state) => ({ syncQueue: [...state.syncQueue, queueItem] }));
+    } else {
+      try {
+        await apiClient.inspections.create(updated);
+      } catch (e) {
+        console.error('Failed to resubmit:', e);
+      }
+    }
+
+    set((state) => ({
+      inspections: state.inspections.map((r) => (r.id === updated.id ? updated : r)),
+    }));
+
+    await get().addLogEntry({
+      userId: currentUserId,
+      userName: currentUserName,
+      action: '撤回后重新发起提交',
+      target: updated.deviceId,
+      detail: `${updated.date} 已撤回记录重新发起提交（第${newSubCount}次提交）`,
+      result: 'success',
+    });
+
+    return updated;
+  },
+
+  getSubmissionReceipts: (recordId: string) => {
+    return get().submissionReceipts
+      .filter((r) => r.recordId === recordId)
+      .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  },
+
+  getLatestReceipt: (recordId: string) => {
+    return get().getSubmissionReceipts(recordId)[0];
+  },
+
+  getAuditLogs: (recordId: string) => {
+    return get().auditLogs
+      .filter((l) => l.recordId === recordId)
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  },
+
+  getTimelineEvents: (recordId: string) => {
+    const history = get().getStatusHistory(recordId);
+    const adapted = history.map((h) => ({
+      id: h.id,
+      recordId: h.recordId,
+      timestamp: h.timestamp,
+      action: h.action,
+      operatorName: h.actorName,
+      fromStatus: h.fromStatus,
+      toStatus: h.toStatus,
+      note: h.note,
+      deviceId: h.deviceId,
+    }));
+    return buildTimelineEvents(adapted);
+  },
+
+  exportRecords: async (filter: ExportFilter, _format: ExportFormat) => {
+    const { inspections, devices, templates } = get();
+    let records = [...inspections];
+
+    if (filter.startDate) {
+      records = records.filter((r) => r.date >= filter.startDate!);
+    }
+    if (filter.endDate) {
+      records = records.filter((r) => r.date <= filter.endDate!);
+    }
+    if (filter.deviceIds && filter.deviceIds.length > 0) {
+      records = records.filter((r) => filter.deviceIds!.includes(r.deviceId));
+    }
+    if (filter.statuses && filter.statuses.length > 0) {
+      records = records.filter((r) => filter.statuses!.includes(r.status));
+    }
+    if (filter.inspectorIds && filter.inspectorIds.length > 0) {
+      records = records.filter((r) => filter.inspectorIds!.includes(r.inspectorId));
+    }
+
+    return records.map((r) => {
+      const device = devices.find((d) => d.id === r.deviceId);
+      const tpl = templates.find((t) => t.id === r.templateId);
+      const meta = get().getRecordMeta(r.id);
+      const latestReceipt = get().getLatestReceipt(r.id);
+      return {
+        id: r.id,
+        deviceId: r.deviceId,
+        deviceCode: device?.code || '',
+        deviceName: device?.name || '',
+        deviceLocation: device?.location || '',
+        deviceCategory: device?.category || '',
+        date: r.date,
+        templateId: r.templateId,
+        templateName: tpl?.name || '',
+        templateVersion: r.templateVersion,
+        inspectorId: r.inspectorId,
+        inspectorName: r.inspectorName,
+        values: r.values,
+        photoCount: r.photos.length,
+        anomalyLevel: r.anomalyLevel,
+        status: r.status,
+        submissionCount: r.submissionCount || 0,
+        withdrawCount: r.withdrawCount || 0,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        submittedAt: r.submittedAt || '',
+        firstSubmittedAt: r.firstSubmittedAt || '',
+        lastWithdrawnAt: r.lastWithdrawnAt || '',
+        syncedAt: r.syncedAt || '',
+        originDeviceId: r.originDeviceId || '',
+        hasConflict: meta?.hasConflict || false,
+        conflictResolution: meta?.lastConflictResolution || '',
+        receiptNo: latestReceipt?.receiptNo || '',
+        sourceDevice: latestReceipt?.sourceDeviceInfo || '',
+      };
+    });
+  },
+
+  saveSession: async (session: Partial<SessionState>) => {
+    const state = get();
+    const now = new Date().toISOString();
+    const fullSession: SessionState = {
+      id: generateId('ses'),
+      userId: state.currentUserId,
+      deviceId: state.currentDeviceId,
+      startedAt: now,
+      lastActiveAt: now,
+      unsavedChanges: false,
+      ...session,
+    };
+    await dbPutSession(fullSession);
+    set((s) => ({
+      sessionStates: s.sessionStates.some((x) => x.id === fullSession.id)
+        ? s.sessionStates.map((x) => (x.id === fullSession.id ? fullSession : x))
+        : [...s.sessionStates, fullSession],
+    }));
+  },
+
+  restoreSession: async () => {
+    const state = get();
+    if (!featureFlags.enableAutoResume) return null;
+    try {
+      const session = await dbGetSessionByUserDevice(state.currentUserId, state.currentDeviceId);
+      if (session) {
+        set({ recoveredSession: session });
+      }
+      return session;
+    } catch (e) {
+      console.warn('Restore session failed:', e);
+      return null;
+    }
+  },
+
+  clearRecoveredSession: () => {
+    set({ recoveredSession: null });
   },
 
   resetError: () => set({ error: null }),

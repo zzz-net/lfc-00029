@@ -11,6 +11,7 @@ import Export from "@/pages/Export";
 import Logs from "@/pages/Logs";
 import StatusDesk from "@/pages/StatusDesk";
 import SubmissionReceipt from "@/pages/SubmissionReceipt";
+import SubmissionWorkbench from "@/pages/SubmissionWorkbench";
 import { useStore } from "@/store/useStore";
 
 function AppInitializer() {
@@ -42,6 +43,7 @@ function AppInitializer() {
       <Route path="/inspections" element={<Inspections />} />
       <Route path="/inspections/:deviceId" element={<InspectionForm />} />
       <Route path="/status-desk" element={<StatusDesk />} />
+      <Route path="/submission-workbench" element={<SubmissionWorkbench />} />
       <Route path="/record/:recordId/receipt" element={<SubmissionReceipt />} />
       <Route path="/sync" element={<Sync />} />
       <Route path="/export" element={<Export />} />

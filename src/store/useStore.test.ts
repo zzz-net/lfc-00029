@@ -327,7 +327,7 @@ describe('useStore - 撤回与状态流转', () => {
       const result = await useStore.getState().withdrawInspection('rec_123');
 
       expect(result).toBeDefined();
-      expect(result!.status).toBe('draft');
+      expect(result!.status).toBe('withdrawn');
       expect(result!.lastWithdrawnAt).toBeDefined();
       expect(indexedDb.deleteSyncQueueItem).toHaveBeenCalledWith('rec_123');
       expect(indexedDb.addStatusChangeEvent).toHaveBeenCalled();

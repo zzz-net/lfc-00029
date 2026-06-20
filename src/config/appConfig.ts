@@ -1,5 +1,27 @@
-export type StatusKey = 'draft' | 'submitted' | 'synced' | 'conflict';
-export type ActionKey = 'save_draft' | 'submit' | 'withdraw' | 'sync' | 'resolve_conflict' | 'resubmit';
+export type StatusKey = 'draft' | 'submitted' | 'synced' | 'conflict' | 'withdrawn' | 'resumed';
+export type ActionKey = 'save_draft' | 'submit' | 'withdraw' | 'sync' | 'resolve_conflict' | 'resubmit' | 'resume' | 'resubmit_after_withdraw';
+
+export type WorkbenchSection = 'todo' | 'processing' | 'completed' | 'withdrawn';
+
+export interface FeatureFlags {
+  enableAutoResume: boolean;
+  enableDuplicateBlocking: boolean;
+  enableAuditLogOnWithdraw: boolean;
+  enableTimeRangeExport: boolean;
+  enableDeviceBatchExport: boolean;
+  enableSnapshotRetention: boolean;
+  enableAuxiliaryAsyncWrite: boolean;
+  enableTimelineView: boolean;
+}
+
+export interface WorkbenchSectionMeta {
+  key: WorkbenchSection;
+  title: string;
+  subtitle: string;
+  emptyText: string;
+  statuses: StatusKey[];
+  badgePriority: number;
+}
 
 export interface StatusMeta {
   label: string;
@@ -96,6 +118,34 @@ export const statusConfig: Record<StatusKey, StatusMeta> = {
     badgePriority: 3,
     section: 'pending',
   },
+  withdrawn: {
+    label: '已撤回待重提',
+    shortLabel: '已撤回',
+    color: 'bg-surface-400',
+    bgColor: 'bg-surface-100',
+    textColor: 'text-surface-600',
+    borderColor: 'border-surface-200',
+    dotColor: 'bg-surface-400',
+    iconBg: 'bg-surface-200',
+    description: '已从同步队列撤回，保留审计日志后可重新发起',
+    nextActions: ['resubmit_after_withdraw', 'save_draft'],
+    badgePriority: 5,
+    section: 'drafts',
+  },
+  resumed: {
+    label: '已恢复续办',
+    shortLabel: '续办中',
+    color: 'bg-info-500',
+    bgColor: 'bg-info-50',
+    textColor: 'text-info-700',
+    borderColor: 'border-info-200',
+    dotColor: 'bg-info-500',
+    iconBg: 'bg-info-100',
+    description: '上次会话现场已恢复，可继续编辑',
+    nextActions: ['save_draft', 'submit'],
+    badgePriority: 6,
+    section: 'drafts',
+  },
 };
 
 export const actionConfig: Record<ActionKey, ActionMeta> = {
@@ -118,10 +168,10 @@ export const actionConfig: Record<ActionKey, ActionMeta> = {
   withdraw: {
     label: '撤回至草稿',
     shortLabel: '撤回',
-    description: '从同步队列撤回，返回草稿区可继续编辑',
+    description: '从同步队列撤回，返回草稿区可继续编辑，保留审计日志',
     confirmTitle: '确认撤回？',
-    confirmMessage: '撤回后该记录将从同步队列移除，回到草稿区。重新编辑后需再次提交。',
-    successMessage: '已撤回至草稿区',
+    confirmMessage: '撤回后该记录将从同步队列移除，回到草稿区。操作将被记录到审计日志，重新编辑后需再次提交。',
+    successMessage: '已撤回至草稿区，审计日志已留存',
   },
   sync: {
     label: '立即同步',
@@ -147,6 +197,22 @@ export const actionConfig: Record<ActionKey, ActionMeta> = {
     confirmMessage: '该记录之前已提交过一次，再次提交将覆盖同步队列中的版本。',
     successMessage: '已重新提交',
   },
+  resume: {
+    label: '恢复续办',
+    shortLabel: '续办',
+    description: '恢复上次会话现场，继续未完成的编辑',
+    confirmTitle: '恢复上次现场？',
+    confirmMessage: '检测到上次会话有未完成的记录，是否恢复到上次编辑的现场？',
+    successMessage: '已恢复至上次编辑现场',
+  },
+  resubmit_after_withdraw: {
+    label: '撤回后重新发起',
+    shortLabel: '重新发起',
+    description: '撤回后已保留审计日志，可重新发起提交流程',
+    confirmTitle: '重新发起提交流程？',
+    confirmMessage: '撤回操作已记录审计日志，确认重新发起提交？',
+    successMessage: '已重新发起提交，审计日志已留存',
+  },
 };
 
 export const exportFields: ExportField[] = [
@@ -154,18 +220,27 @@ export const exportFields: ExportField[] = [
   { key: 'deviceCode', label: '设备编号', csvOnly: false },
   { key: 'deviceName', label: '设备名称', csvOnly: false },
   { key: 'deviceLocation', label: '设备位置', csvOnly: true },
+  { key: 'deviceCategory', label: '设备分类', csvOnly: true },
   { key: 'date', label: '巡检日期' },
   { key: 'templateName', label: '巡检模板' },
   { key: 'templateVersion', label: '模板版本', csvOnly: true },
   { key: 'inspectorName', label: '巡检员' },
+  { key: 'inspectorId', label: '巡检员ID', csvOnly: true },
   { key: 'statusLabel', label: '状态' },
   { key: 'anomalyLabel', label: '异常等级' },
   { key: 'values', label: '巡检内容(JSON)', csvOnly: true, jsonPath: 'values' },
   { key: 'photoCount', label: '照片数量' },
+  { key: 'submissionCount', label: '提交次数', csvOnly: true },
+  { key: 'withdrawCount', label: '撤回次数', csvOnly: true },
   { key: 'createdAt', label: '创建时间' },
   { key: 'updatedAt', label: '最后更新' },
   { key: 'submittedAt', label: '提交时间' },
+  { key: 'firstSubmittedAt', label: '首次提交时间', csvOnly: true },
+  { key: 'lastWithdrawnAt', label: '最后撤回时间', csvOnly: true },
   { key: 'syncedAt', label: '同步时间' },
+  { key: 'originDeviceId', label: '来源设备ID', csvOnly: true },
+  { key: 'hasConflict', label: '是否有冲突', csvOnly: true },
+  { key: 'conflictResolution', label: '冲突处理结论', csvOnly: true },
   { key: 'lastStatusChange', label: '最近状态变更', csvOnly: true },
 ];
 
@@ -230,6 +305,67 @@ export const submissionFields = {
   lastStatusChange: '最近状态变更',
   conflictResolution: '冲突处理结果',
   changeHistory: '状态变更历史',
+  sourceDevice: '来源设备',
+  operationTime: '操作时间',
+  keySnapshot: '关键快照',
+  statusTrajectory: '状态变更轨迹',
+  auditTrail: '审计日志',
+  receiptInfo: '提交凭据',
+};
+
+export const featureFlags: FeatureFlags = {
+  enableAutoResume: true,
+  enableDuplicateBlocking: true,
+  enableAuditLogOnWithdraw: true,
+  enableTimeRangeExport: true,
+  enableDeviceBatchExport: true,
+  enableSnapshotRetention: true,
+  enableAuxiliaryAsyncWrite: true,
+  enableTimelineView: true,
+};
+
+export const workbenchSections: Record<WorkbenchSection, WorkbenchSectionMeta> = {
+  todo: {
+    key: 'todo',
+    title: '待办列表',
+    subtitle: '需要处理的巡检任务',
+    emptyText: '暂无待办任务',
+    statuses: ['draft', 'resumed'],
+    badgePriority: 1,
+  },
+  processing: {
+    key: 'processing',
+    title: '进行中',
+    subtitle: '已提交待同步或处理冲突',
+    emptyText: '暂无进行中的任务',
+    statuses: ['submitted', 'conflict'],
+    badgePriority: 2,
+  },
+  completed: {
+    key: 'completed',
+    title: '已完成',
+    subtitle: '已成功同步的记录',
+    emptyText: '暂无已完成记录',
+    statuses: ['synced'],
+    badgePriority: 3,
+  },
+  withdrawn: {
+    key: 'withdrawn',
+    title: '已撤回',
+    subtitle: '已撤回待重新发起',
+    emptyText: '暂无已撤回记录',
+    statuses: ['withdrawn'],
+    badgePriority: 4,
+  },
+};
+
+export const validationMessages = {
+  requiredMissing: '存在必填项未填写，请先补全后再操作',
+  versionMismatch: '模板版本已更新，请刷新后重新填写',
+  statusGateFailed: '当前状态不允许执行该操作',
+  duplicateSubmit: '该设备今日已有相同记录正在同步队列中，请先处理',
+  conflictDetected: '检测到数据冲突，请先处理后再操作',
+  auxiliaryWriteSkipped: '附属信息写入失败，但主流程已完成',
 };
 
 export const appConfig = {
@@ -282,6 +418,11 @@ export const appConfig = {
     },
     submissionReceipt: {
       title: '提交凭证',
+    },
+    submissionWorkbench: {
+      title: '提交工作台',
+      subtitle: '草稿整理 · 送审上报 · 撤销回滚 · 恢复续办 · 结果导出',
+      emptyText: '暂无巡检记录',
     },
   },
 
@@ -347,6 +488,9 @@ export const appConfig = {
   actionMeta: actionConfig,
   businessTips,
   submission: submissionFields,
+  workbench: workbenchSections,
+  features: featureFlags,
+  validation: validationMessages,
 };
 
 export type AppConfig = typeof appConfig;

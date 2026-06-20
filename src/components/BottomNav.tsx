@@ -1,4 +1,4 @@
-import { Home, ClipboardList, RefreshCw, FileText, Settings, LayoutDashboard, type LucideIcon } from 'lucide-react';
+import { Home, ClipboardList, RefreshCw, FileText, Settings, LayoutDashboard, Briefcase, type LucideIcon } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useStore } from '@/store/useStore';
 
@@ -20,17 +20,17 @@ export default function BottomNav() {
   const inspectorTabs: TabItem[] = [
     { path: '/', icon: Home, label: '首页' },
     { path: '/inspections', icon: ClipboardList, label: '巡检' },
+    { path: '/submission-workbench', icon: Briefcase, label: '工作台', badge: pendingSyncCount + conflictCount },
     { path: '/status-desk', icon: LayoutDashboard, label: '状态台', badge: pendingSyncCount + conflictCount },
     { path: '/sync', icon: RefreshCw, label: '同步', badge: conflictCount },
-    { path: '/export', icon: FileText, label: '导出' },
   ];
 
   const adminTabs: TabItem[] = [
     { path: '/', icon: Home, label: '首页' },
     { path: '/templates', icon: ClipboardList, label: '模板' },
     { path: '/devices', icon: Settings, label: '设备' },
+    { path: '/submission-workbench', icon: Briefcase, label: '工作台' },
     { path: '/sync', icon: RefreshCw, label: '同步' },
-    { path: '/logs', icon: FileText, label: '日志' },
   ];
 
   const tabs = isInspector ? inspectorTabs : adminTabs;

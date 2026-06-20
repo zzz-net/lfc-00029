@@ -158,24 +158,25 @@
       "id": "rec_mqlpbg8a_pe3pj2d0",
       "deviceId": "dev_mqlpbg8a_b50m86mk",
       "templateId": "tpl_mqlpbg8a_05xc68mp",
-      "templateVersion": 2,
-      "inspectorId": "inspector_001",
-      "inspectorName": "张巡检",
+      "templateVersion": 1,
+      "inspectorId": "reviewer_003",
+      "inspectorName": "reviewer-3",
       "date": "2026-06-20",
       "values": {
-        "appearance": "破损",
-        "temperature": 88,
-        "vibration": "明显",
-        "noise": "轻微异常",
-        "leak": "明显漏",
-        "remark": "review conflict p1"
+        "appearance": "??",
+        "temperature": 91,
+        "vibration": "??",
+        "leak": "???",
+        "remark": "review conflict chain"
       },
       "photos": [],
       "anomalyLevel": "critical",
       "status": "synced",
-      "createdAt": "2026-06-20T03:04:40.397Z",
-      "updatedAt": "2026-06-20T03:04:40.397Z",
-      "syncedAt": "2026-06-20T03:04:44.018Z"
+      "createdAt": "2026-06-20T07:54:40.990Z",
+      "updatedAt": "2026-06-20T07:54:40.990Z",
+      "submissionCount": 1,
+      "withdrawCount": 0,
+      "syncedAt": "2026-06-20T07:54:41.001Z"
     },
     {
       "id": "rec_mqlrxts7_ifgbjo8f",
@@ -201,26 +202,26 @@
       "syncedAt": "2026-06-20T03:04:42.441Z"
     },
     {
-      "id": "rec_mqlyrqty_hvus5np4",
+      "id": "rec_mqm2b1eb_7spnn6et",
       "deviceId": "dev_mqlpbg8a_hi1vekcb",
       "templateId": "tpl_mqlpbg8a_05xc68mp",
       "templateVersion": 1,
-      "inspectorId": "reviewer_001",
-      "inspectorName": "reviewer",
+      "inspectorId": "reviewer_002",
+      "inspectorName": "reviewer-2",
       "date": "2026-06-20",
       "values": {
-        "leak": "?",
-        "vibration": "?",
-        "remark": "review-created",
         "appearance": "??",
-        "temperature": 41
+        "temperature": 39,
+        "vibration": "?",
+        "leak": "?",
+        "remark": "review success chain"
       },
       "photos": [],
       "anomalyLevel": "none",
       "status": "synced",
-      "createdAt": "2026-06-20T06:15:41.974Z",
-      "updatedAt": "2026-06-20T06:15:41.974Z",
-      "syncedAt": "2026-06-20T06:15:41.974Z"
+      "createdAt": "2026-06-20T07:54:40.979Z",
+      "updatedAt": "2026-06-20T07:54:40.979Z",
+      "syncedAt": "2026-06-20T07:54:40.979Z"
     }
   ],
   "conflicts": [
@@ -285,14 +286,96 @@
       ],
       "resolution": "keep-local",
       "resolvedAt": "2026-06-20T03:04:44.019Z"
+    },
+    {
+      "id": "cfl_mqm2b1ep_s4sengez",
+      "deviceId": "dev_mqlpbg8a_b50m86mk",
+      "date": "2026-06-20",
+      "localVersion": {
+        "id": "review_conflict_1781942080990",
+        "deviceId": "dev_mqlpbg8a_b50m86mk",
+        "templateId": "tpl_mqlpbg8a_05xc68mp",
+        "templateVersion": 1,
+        "inspectorId": "reviewer_003",
+        "inspectorName": "reviewer-3",
+        "date": "2026-06-20",
+        "values": {
+          "appearance": "??",
+          "temperature": 91,
+          "vibration": "??",
+          "leak": "???",
+          "remark": "review conflict chain"
+        },
+        "photos": [],
+        "anomalyLevel": "critical",
+        "status": "submitted",
+        "createdAt": "2026-06-20T07:54:40.990Z",
+        "updatedAt": "2026-06-20T07:54:40.990Z",
+        "submissionCount": 1,
+        "withdrawCount": 0
+      },
+      "remoteVersion": {
+        "id": "rec_mqlpbg8a_pe3pj2d0",
+        "deviceId": "dev_mqlpbg8a_b50m86mk",
+        "templateId": "tpl_mqlpbg8a_05xc68mp",
+        "templateVersion": 2,
+        "inspectorId": "inspector_001",
+        "inspectorName": "张巡检",
+        "date": "2026-06-20",
+        "values": {
+          "appearance": "破损",
+          "temperature": 88,
+          "vibration": "明显",
+          "noise": "轻微异常",
+          "leak": "明显漏",
+          "remark": "review conflict p1"
+        },
+        "photos": [],
+        "anomalyLevel": "critical",
+        "status": "synced",
+        "createdAt": "2026-06-20T03:04:40.397Z",
+        "updatedAt": "2026-06-20T03:04:40.397Z",
+        "syncedAt": "2026-06-20T03:04:44.018Z"
+      },
+      "resolved": true,
+      "diffFields": [
+        "appearance",
+        "temperature",
+        "vibration",
+        "leak",
+        "remark",
+        "noise"
+      ],
+      "resolution": "keep-local",
+      "resolvedAt": "2026-06-20T07:54:41.002Z"
     }
   ],
   "logs": [
     {
-      "id": "log_mqlyrqty_yer9cgxk",
-      "timestamp": "2026-06-20T06:15:41.974Z",
-      "userId": "reviewer_001",
-      "userName": "reviewer",
+      "id": "log_mqm2b1ey_6dgq88cu",
+      "timestamp": "2026-06-20T07:54:41.002Z",
+      "userId": "reviewer_003",
+      "userName": "reviewer-3",
+      "action": "解决冲突",
+      "target": "dev_mqlpbg8a_b50m86mk",
+      "detail": "解决了 2026-06-20 的冲突，方式：keep-local",
+      "result": "success"
+    },
+    {
+      "id": "log_mqm2b1eq_yc4s2j25",
+      "timestamp": "2026-06-20T07:54:40.994Z",
+      "userId": "reviewer_003",
+      "userName": "reviewer-3",
+      "action": "同步冲突",
+      "target": "dev_mqlpbg8a_b50m86mk",
+      "detail": "2026-06-20 设备巡检记录存在冲突，共 6 个字段不同",
+      "result": "conflict"
+    },
+    {
+      "id": "log_mqm2b1ec_upjee9ji",
+      "timestamp": "2026-06-20T07:54:40.979Z",
+      "userId": "reviewer_002",
+      "userName": "reviewer-2",
       "action": "创建巡检记录",
       "target": "dev_mqlpbg8a_hi1vekcb",
       "detail": "创建了 2026-06-20 的巡检记录",

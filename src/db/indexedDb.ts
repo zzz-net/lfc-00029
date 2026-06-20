@@ -10,6 +10,9 @@ import type {
   StatusChangeEvent,
   SubmissionSnapshot,
   RecordMeta,
+  SubmissionReceipt,
+  AuditLogEntry,
+  SessionState,
 } from '@/types';
 
 interface InspectionDB extends DBSchema {
@@ -56,10 +59,25 @@ interface InspectionDB extends DBSchema {
     key: string;
     value: RecordMeta;
   };
+  submissionReceipts: {
+    key: string;
+    value: SubmissionReceipt;
+    indexes: { 'by-record': string; 'by-receipt-no': string; 'by-device': string };
+  };
+  auditLogs: {
+    key: string;
+    value: AuditLogEntry;
+    indexes: { 'by-record': string; 'by-record-timestamp': [string, string]; 'by-operator': string };
+  };
+  sessionStates: {
+    key: string;
+    value: SessionState;
+    indexes: { 'by-user-device': [string, string] };
+  };
 }
 
 const DB_NAME = 'inspection-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBPDatabase<InspectionDB>> | null = null;
 
@@ -113,6 +131,22 @@ export function getDB(): Promise<IDBPDatabase<InspectionDB>> {
         }
         if (!db.objectStoreNames.contains('recordMeta')) {
           db.createObjectStore('recordMeta', { keyPath: 'recordId' });
+        }
+        if (!db.objectStoreNames.contains('submissionReceipts')) {
+          const sr = db.createObjectStore('submissionReceipts', { keyPath: 'id' });
+          sr.createIndex('by-record', 'recordId');
+          sr.createIndex('by-receipt-no', 'receiptNo', { unique: true });
+          sr.createIndex('by-device', 'sourceDeviceId');
+        }
+        if (!db.objectStoreNames.contains('auditLogs')) {
+          const al = db.createObjectStore('auditLogs', { keyPath: 'id' });
+          al.createIndex('by-record', 'recordId');
+          al.createIndex('by-record-timestamp', ['recordId', 'timestamp']);
+          al.createIndex('by-operator', 'operatorId');
+        }
+        if (!db.objectStoreNames.contains('sessionStates')) {
+          const ss = db.createObjectStore('sessionStates', { keyPath: 'id' });
+          ss.createIndex('by-user-device', ['userId', 'deviceId']);
         }
       },
     });
@@ -358,10 +392,112 @@ export async function deleteRecordMeta(recordId: string): Promise<void> {
   await db.delete('recordMeta', recordId);
 }
 
+export async function getAllSubmissionReceipts(): Promise<SubmissionReceipt[]> {
+  const db = await getDB();
+  return db.getAll('submissionReceipts');
+}
+
+export async function getReceiptsByRecord(recordId: string): Promise<SubmissionReceipt[]> {
+  const db = await getDB();
+  const all = await db.getAllFromIndex('submissionReceipts', 'by-record', recordId);
+  return all.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+}
+
+export async function getReceiptById(id: string): Promise<SubmissionReceipt | undefined> {
+  const db = await getDB();
+  return db.get('submissionReceipts', id);
+}
+
+export async function getReceiptByNo(receiptNo: string): Promise<SubmissionReceipt | undefined> {
+  const db = await getDB();
+  return db.getFromIndex('submissionReceipts', 'by-receipt-no', receiptNo);
+}
+
+export async function putSubmissionReceipt(receipt: SubmissionReceipt): Promise<void> {
+  const db = await getDB();
+  await db.put('submissionReceipts', receipt);
+}
+
+export async function deleteReceiptsByRecord(recordId: string): Promise<void> {
+  const db = await getDB();
+  const items = await db.getAllFromIndex('submissionReceipts', 'by-record', recordId);
+  const tx = db.transaction('submissionReceipts', 'readwrite');
+  for (const item of items) {
+    await tx.store.delete(item.id);
+  }
+  await tx.done;
+}
+
+export async function getAllAuditLogs(): Promise<AuditLogEntry[]> {
+  const db = await getDB();
+  return db.getAll('auditLogs');
+}
+
+export async function getAuditLogsByRecord(recordId: string): Promise<AuditLogEntry[]> {
+  const db = await getDB();
+  const all = await db.getAllFromIndex('auditLogs', 'by-record', recordId);
+  return all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+}
+
+export async function getAuditLogById(id: string): Promise<AuditLogEntry | undefined> {
+  const db = await getDB();
+  return db.get('auditLogs', id);
+}
+
+export async function addAuditLog(log: AuditLogEntry): Promise<void> {
+  const db = await getDB();
+  await db.add('auditLogs', log);
+}
+
+export async function addAuditLogs(logs: AuditLogEntry[]): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction('auditLogs', 'readwrite');
+  for (const log of logs) {
+    await tx.store.add(log);
+  }
+  await tx.done;
+}
+
+export async function deleteAuditLogsByRecord(recordId: string): Promise<void> {
+  const db = await getDB();
+  const items = await db.getAllFromIndex('auditLogs', 'by-record', recordId);
+  const tx = db.transaction('auditLogs', 'readwrite');
+  for (const item of items) {
+    await tx.store.delete(item.id);
+  }
+  await tx.done;
+}
+
+export async function getAllSessionStates(): Promise<SessionState[]> {
+  const db = await getDB();
+  return db.getAll('sessionStates');
+}
+
+export async function getSessionState(id: string): Promise<SessionState | undefined> {
+  const db = await getDB();
+  return db.get('sessionStates', id);
+}
+
+export async function getSessionByUserDevice(userId: string, deviceId: string): Promise<SessionState | undefined> {
+  const db = await getDB();
+  const all = await db.getAllFromIndex('sessionStates', 'by-user-device', [userId, deviceId]);
+  return all.sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))[0];
+}
+
+export async function putSessionState(session: SessionState): Promise<void> {
+  const db = await getDB();
+  await db.put('sessionStates', session);
+}
+
+export async function deleteSessionState(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('sessionStates', id);
+}
+
 export async function clearAllData(): Promise<void> {
   const db = await getDB();
   const tx = db.transaction(
-    ['templates', 'devices', 'inspections', 'conflicts', 'logs', 'syncQueue', 'statusHistory', 'submissionSnapshots', 'recordMeta'],
+    ['templates', 'devices', 'inspections', 'conflicts', 'logs', 'syncQueue', 'statusHistory', 'submissionSnapshots', 'recordMeta', 'submissionReceipts', 'auditLogs', 'sessionStates'],
     'readwrite'
   );
   await Promise.all([
@@ -374,6 +510,9 @@ export async function clearAllData(): Promise<void> {
     tx.objectStore('statusHistory').clear(),
     tx.objectStore('submissionSnapshots').clear(),
     tx.objectStore('recordMeta').clear(),
+    tx.objectStore('submissionReceipts').clear(),
+    tx.objectStore('auditLogs').clear(),
+    tx.objectStore('sessionStates').clear(),
   ]);
   await tx.done;
 }

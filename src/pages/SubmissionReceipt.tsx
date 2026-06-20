@@ -14,6 +14,8 @@ import {
   ChevronUp,
   AlertTriangle,
   Zap,
+  RefreshCw,
+  ShieldCheck,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { appConfig, statusConfig, actionConfig, submissionFields } from '@/config/appConfig';
@@ -32,6 +34,9 @@ const statusActionLabels: Record<StatusChangeAction, string> = {
   conflict_detected: '检测到冲突',
   conflict_resolved: '冲突已解决',
   edit_after_sync: '同步后编辑',
+  resume: '恢复续办',
+  resubmit_after_withdraw: '撤回后重新发起',
+  withdraw_audit_logged: '撤回并记录审计',
 };
 
 const statusIconMap: Record<RecordStatus, React.ReactNode> = {
@@ -39,6 +44,8 @@ const statusIconMap: Record<RecordStatus, React.ReactNode> = {
   submitted: <Send size={32} />,
   synced: <CheckCircle size={32} />,
   conflict: <AlertTriangle size={32} />,
+  withdrawn: <RotateCcw size={32} />,
+  resumed: <RefreshCw size={32} />,
 };
 
 function formatTimestamp(ts: string): string {
